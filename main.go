@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/cenkalti/backoff/v5"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/chromedp"
+	"github.com/cterence/scrobble-deduplicator/internal/cache"
 	"github.com/michiwend/gomusicbrainz"
 	"github.com/redis/go-redis/v9"
 )
@@ -29,11 +31,30 @@ type Scrobble struct {
 }
 
 func main() {
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password set
-		DB:       0,  // use default DB
-	})
+	ctx := context.Background()
+	var c cache.Cache
+
+	switch os.Getenv("SD_CACHE") {
+	case "redis":
+		slog.Info("Using Redis cache")
+		rdb := redis.NewClient(&redis.Options{
+			Addr:     "localhost:6379",
+			Password: "", // no password set
+			DB:       0,  // use default DB
+		})
+		defer rdb.Close()
+		c = cache.NewRedis(rdb)
+
+		// Test the connection
+		status := rdb.Ping(ctx)
+		if status.Err() != nil {
+			slog.Error("Failed to connect to Redis", "error", status.Err())
+			os.Exit(1)
+		}
+	default:
+		slog.Info("Using in-memory cache")
+		c = cache.NewInMemory()
+	}
 
 	mb, err := gomusicbrainz.NewWS2Client("https://musicbrainz.org", "lastfm-scrobble-deduplicator", "1.0", "https://github.com/cterence")
 	if err != nil {
@@ -41,25 +62,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	username, password, delete := os.Getenv("LASTFM_USERNAME"), os.Getenv("LASTFM_PASSWORD"), os.Getenv("LASTFM_DELETE") == "true"
+	username, password, delete := os.Getenv("SD_LASTFM_USERNAME"), os.Getenv("SD_LASTFM_PASSWORD"), os.Getenv("SD_DELETE") == "true"
 	if username == "" || password == "" {
-		log.Fatal("Environment variables LASTFM_USERNAME and LASTFM_PASSWORD must be set")
+		log.Fatal("Environment variables SD_LASTFM_USERNAME and SD_LASTFM_PASSWORD must be set")
 	}
 
 	startPage := 0
-	startPageStr := os.Getenv("LASTFM_START_PAGE")
+	startPageStr := os.Getenv("SD_START_PAGE")
 	if startPageStr != "" {
 		var err error
 		startPage, err = strconv.Atoi(startPageStr)
 		if err != nil {
-			log.Fatalf("Invalid LASTFM_START_PAGE value: %v", err)
+			log.Fatalf("Invalid SD_START_PAGE value: %v", err)
 		}
 	}
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", os.Getenv("LASTFM_HEADLESS") == "true"),
+		chromedp.Flag("headless", os.Getenv("SD_HEADLESS") == "true"),
 	)
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
 	defer allocCancel()
 
 	taskCtx, taskCancel := chromedp.NewContext(
@@ -130,11 +151,14 @@ func main() {
 
 	var previousScrobble *Scrobble
 	var deletedScrobbles int
+	var lastScrobbleDeleted bool
 
 	for i := currentPage; i > 0; i-- {
 		scrobbles := []Scrobble{}
 		slog.Info("Processing page", "page", i)
-		err = chromedp.Run(taskCtx,
+		timeoutCtx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
+		defer cancel()
+		err = chromedp.Run(timeoutCtx,
 			chromedp.Navigate("https://www.last.fm/user/"+username+"/library?page="+strconv.Itoa(i)),
 			chromedp.WaitVisible(`.top-bar`, chromedp.ByQuery),
 			// Remove the top bar to avoid clicking on it by accident when deleting scrobbles
@@ -148,7 +172,7 @@ func main() {
 
 		var scrobbleRows []string
 		var scrobbleNodes []*cdp.Node
-		err = chromedp.Run(taskCtx,
+		err = chromedp.Run(timeoutCtx,
 			chromedp.Evaluate(`[...document.querySelectorAll('.chartlist-row')].map((e) => e.innerHTML)`, &scrobbleRows),
 			chromedp.Nodes(`//div[@class='chartlist-row']`, &scrobbleNodes, chromedp.ByQueryAll),
 		)
@@ -175,11 +199,11 @@ func main() {
 			queryHasher.Write([]byte(query))
 			queryHash := queryHasher.Sum(nil)
 
-			val, err := rdb.Get(context.Background(), fmt.Sprintf("mbquery:%x", queryHash)).Result()
+			val, err := c.Get(ctx, fmt.Sprintf("mbquery:%x", queryHash))
 			if err != nil {
-				if err == redis.Nil {
-					songLength, err = backoff.Retry(context.TODO(), func() (int, error) {
-						return getRecordingLength(mb, rdb, query, queryHash)
+				if errors.Is(err, cache.ErrCacheMiss) {
+					songLength, err = backoff.Retry(ctx, func() (int, error) {
+						return getRecordingLength(ctx, mb, c, query, queryHash)
 					}, backoff.WithBackOff(backoff.NewExponentialBackOff()), backoff.WithMaxTries(10))
 					if err != nil {
 						fmt.Println("Error:", err)
@@ -206,13 +230,14 @@ func main() {
 
 			slog.Debug("Found recording length", "artist", s.Artist, "track", s.Track, "timestamp", s.Timestamp, "length", s.Length)
 
+			lastScrobbleDeleted = false
 			if previousScrobble != nil {
 				// Check if the current scrobble is a duplicate of the previous one
 				if s.Artist == previousScrobble.Artist && s.Track == previousScrobble.Track {
 					timeDiff := s.Timestamp.Sub(previousScrobble.Timestamp)
 					if timeDiff < s.Length {
 						slog.Info("🎯 Duplicate scrobble detected!", "artist", s.Artist, "track", s.Track, "timestamp", s.Timestamp)
-						err = deleteScrobble(taskCtx, s.TimestampString, delete)
+						err = deleteScrobble(timeoutCtx, s.TimestampString, delete)
 						if err != nil {
 							slog.Error("Failed to delete duplicate scrobble", "artist", s.Artist, "track", s.Track, "timestamp", s.Timestamp, "error", err)
 						}
@@ -220,10 +245,13 @@ func main() {
 							slog.Info("Scrobble deleted", "artist", s.Artist, "track", s.Track, "timestamp", s.Timestamp)
 						}
 						deletedScrobbles++
+						lastScrobbleDeleted = true
 					}
 				}
 			}
-			previousScrobble = &s
+			if !lastScrobbleDeleted {
+				previousScrobble = &s
+			}
 		}
 	}
 
@@ -278,7 +306,7 @@ func generateScrobble(row string) (Scrobble, error) {
 	}, nil
 }
 
-func getRecordingLength(mb *gomusicbrainz.WS2Client, rdb *redis.Client, query string, queryHash []byte) (int, error) {
+func getRecordingLength(ctx context.Context, mb *gomusicbrainz.WS2Client, cache cache.Cache, query string, queryHash []byte) (int, error) {
 	length := -1
 
 	resp, err := mb.SearchRecording(query, -1, -1)
@@ -298,7 +326,7 @@ func getRecordingLength(mb *gomusicbrainz.WS2Client, rdb *redis.Client, query st
 		length = resp.Recordings[0].Length
 	}
 
-	rdb.Set(context.Background(), fmt.Sprintf("mbquery:%x", queryHash), length, 24*time.Hour)
+	cache.Set(ctx, fmt.Sprintf("mbquery:%x", queryHash), fmt.Sprintf("%d", length))
 	time.Sleep(200 * time.Millisecond) // Sleep to avoid hitting the API too fast
 	return length, nil
 }
