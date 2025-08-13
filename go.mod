@@ -19,9 +19,13 @@ require (
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.4.0 // indirect
+	github.com/goccy/go-yaml v1.18.0 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/redis/go-redis/v9 v9.12.1 // indirect
+	github.com/urfave/cli-altsrc/v3 v3.0.1 // indirect
+	github.com/urfave/cli/v3 v3.4.1 // indirect
 	golang.org/x/net v0.33.0 // indirect
 	golang.org/x/sys v0.35.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

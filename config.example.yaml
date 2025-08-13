@@ -1,0 +1,11 @@
+cache: redis # redis|inmemory
+lastfm:
+  username: musiclover
+  password: secret!
+startPage: 15
+noHeadless: true
+redisURL: redis://localhost:6379/0
+songLengths:
+  - artist: "65daysofstatic"
+    track: "Doxxx Yrself (Bonus Track)"
+    length: 5m06s
