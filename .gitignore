@@ -32,5 +32,8 @@ go.work.sum
 # .idea/
 # .vscode/
 
+# Project
 .envrc
 config.yaml
+tmp/
+customsonglengths.yaml

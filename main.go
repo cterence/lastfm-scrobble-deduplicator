@@ -19,8 +19,10 @@ func main() {
 		lastFMPassword string
 		startPage      int
 		noHeadless     bool
+		browserURL     string
 		redisURL       string
 		delete         bool
+		logLevel       string
 	)
 
 	cmd := &cli.Command{
@@ -70,8 +72,7 @@ func main() {
 			&cli.StringFlag{
 				Name:        "redis-url",
 				Usage:       "Redis URL",
-				Sources:     cli.NewValueSourceChain(yaml.YAML("redisURL", altsrc.NewStringPtrSourcer(&configFilePath))),
-				Value:       "redis://localhost:6379/0",
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("REDIS_URL"), yaml.YAML("redisURL", altsrc.NewStringPtrSourcer(&configFilePath))),
 				Destination: &redisURL,
 			},
 			&cli.BoolFlag{
@@ -80,6 +81,19 @@ func main() {
 				Value:       false,
 				Sources:     cli.NewValueSourceChain(yaml.YAML("delete", altsrc.NewStringPtrSourcer(&configFilePath))),
 				Destination: &delete,
+			},
+			&cli.StringFlag{
+				Name:        "browser-url",
+				Usage:       "Browser URL",
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("BROWSER_URL"), yaml.YAML("browserURL", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &browserURL,
+			},
+			&cli.StringFlag{
+				Name:        "log-level",
+				Usage:       "Log level (debug, info, warn, error)",
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("LOG_LEVEL"), yaml.YAML("logLevel", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Value:       "info",
+				Destination: &logLevel,
 			},
 		},
 		Action: func(context.Context, *cli.Command) error {
@@ -93,9 +107,11 @@ func main() {
 				StartPage:      startPage,
 				NoHeadless:     noHeadless,
 				RedisURL:       redisURL,
+				BrowserURL:     browserURL,
 				Delete:         delete,
+				LogLevel:       logLevel,
 			}
-			return app.Run(ctx, config)
+			return app.Run(ctx, &config)
 		},
 	}
 

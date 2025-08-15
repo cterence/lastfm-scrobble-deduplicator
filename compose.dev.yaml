@@ -2,16 +2,13 @@ services:
   app:
     container_name: app
     build:
+      target: development
       context: .
-    command:
-      - /app/main
-      - -c
-      - config.yaml
     environment:
       REDIS_URL: redis://redis:6379/0
       BROWSER_URL: ws://chromium:3000?token=local
     volumes:
-      - ./config.yaml:/app/config.yaml
+      - ./:/app
     depends_on:
       redis:
         condition: service_healthy
@@ -37,6 +34,7 @@ services:
     environment:
       TOKEN: local
       HOST: chromium
+      DEBUG: -*
     healthcheck:
       test: ["CMD", "curl", "localhost:3000/active?token=local"]
       interval: 10s
