@@ -48,12 +48,12 @@ type Config struct {
 }
 
 type stats struct {
-	cacheHits              int
-	cacheMisses            int
-	processedScrobbles     int
-	deletedScrobbles       []scrobble
-	unknownLengthSongCount int
-	elapsedTime            time.Duration
+	cacheHits                  int
+	cacheMisses                int
+	processedScrobbles         int
+	deletedScrobbles           []scrobble
+	unknownTrackDurationsCount int
+	elapsedTime                time.Duration
 }
 
 type scrobble struct {
@@ -61,13 +61,16 @@ type scrobble struct {
 	track           string
 	timestamp       time.Time
 	timestampString string
-	length          time.Duration
+	duration        time.Duration
 }
 
-const customSongLengthFileName = "customsonglengths.yaml"
+const customTrackDurationsFile = "track-durations.yaml"
 
 func Run(ctx context.Context, c *Config) error {
 	err := initApp(ctx, c)
+	if err != nil {
+		return fmt.Errorf("failed to init app: %v", err)
+	}
 	defer c.allocCancel()
 	defer c.taskCancel()
 
@@ -81,8 +84,11 @@ func Run(ctx context.Context, c *Config) error {
 		return fmt.Errorf("failed to get starting page: %v", err)
 	}
 
-	customSongLengths, err := getCustomSongLengths()
-	unknownSongLengths := make(map[string]map[string]string, 0)
+	userTrackDurations, err := getUserTrackDurations()
+	if err != nil {
+		return fmt.Errorf("failed to get user track durations: %v", err)
+	}
+	unknownTrackDurations := make(map[string]map[string]string, 0)
 
 	var previousScrobble *scrobble
 	var lastScrobbleDeleted bool
@@ -95,14 +101,14 @@ func Run(ctx context.Context, c *Config) error {
 		}
 
 		for _, s := range scrobbles {
-			if customSongLengths != nil && customSongLengths[s.artist] != nil && customSongLengths[s.artist][s.track] != "" {
+			if userTrackDurations != nil && userTrackDurations[s.artist] != nil && userTrackDurations[s.artist][s.track] != "" {
 				// Convert to duration with 4m0s format
-				songLength, err := time.ParseDuration(customSongLengths[s.artist][s.track])
+				trackDuration, err := time.ParseDuration(userTrackDurations[s.artist][s.track])
 				if err != nil {
-					c.log.Error("Failed to parse custom length", "artist", s.artist, "track", s.track, "error", err)
+					c.log.Error("Failed to parse user duration", "artist", s.artist, "track", s.track, "error", err)
 				}
-				s.length = songLength
-				c.log.Debug("Found song length in custom song lengths", "artist", s.artist, "track", s.track, "length", s.length)
+				s.duration = trackDuration
+				c.log.Debug("Found track duration in user track durations", "artist", s.artist, "track", s.track, "duration", s.duration)
 			} else {
 				query := fmt.Sprintf(`artist:"%s" AND recording:"%s"`, s.artist, s.track)
 				// Hash the query
@@ -114,37 +120,38 @@ func Run(ctx context.Context, c *Config) error {
 				if err != nil {
 					if errors.Is(err, cache.ErrCacheMiss) {
 						c.runStats.cacheMisses++
-						songLength, err := backoff.Retry(ctx, func() (time.Duration, error) {
-							return getSongLengthFromMusicBrainz(ctx, c, query, queryHash)
+						c.log.Debug("Cache miss for track duration query", "artist", s.artist, "track", s.track, "duration", s.duration)
+						TrackDurations, err := backoff.Retry(ctx, func() (time.Duration, error) {
+							return getTrackDurationsFromMusicBrainz(ctx, c, query, queryHash)
 						}, backoff.WithBackOff(backoff.NewExponentialBackOff()), backoff.WithMaxTries(10))
 						if err != nil {
-							c.log.Error("failed to get song length from MusicBrainz API", "error", err)
+							c.log.Error("failed to get track duration from MusicBrainz API", "error", err)
 							continue
 						}
-						s.length = songLength
-						c.log.Debug("Found song length from MusicBrainz API", "artist", s.artist, "track", s.track, "length", s.length)
+						s.duration = TrackDurations
+						c.log.Debug("Found track duration from MusicBrainz API", "artist", s.artist, "track", s.track, "duration", s.duration)
 					} else {
-						c.log.Error("Failed to get cached song length", "query", query, "error", err)
+						c.log.Error("Failed to get cached track duration", "query", query, "error", err)
 						continue
 					}
 				} else {
 					c.runStats.cacheHits++
-					cachedSongLength, err := strconv.Atoi(val)
+					cachedTrackDurations, err := strconv.Atoi(val)
 					if err != nil {
-						c.log.Error("Failed to parse cached length", "query", query, "error", err)
+						c.log.Error("Failed to parse cached duration", "query", query, "error", err)
 						continue
 					}
-					s.length = time.Duration(cachedSongLength) * time.Millisecond
-					c.log.Debug("Cache hit for song length query", "artist", s.artist, "track", s.track, "length", s.length)
+					s.duration = time.Duration(cachedTrackDurations) * time.Millisecond
+					c.log.Debug("Cache hit for track duration query", "artist", s.artist, "track", s.track, "duration", s.duration)
 				}
-				if s.length < 0 {
-					if unknownSongLengths[s.artist] == nil {
-						unknownSongLengths[s.artist] = make(map[string]string)
+				if s.duration < 0 {
+					if unknownTrackDurations[s.artist] == nil {
+						unknownTrackDurations[s.artist] = make(map[string]string)
 					}
-					if _, found := unknownSongLengths[s.artist][s.track]; !found {
-						unknownSongLengths[s.artist][s.track] = ""
-						c.runStats.unknownLengthSongCount++
-						c.log.Warn("No song length found for query, saved to unknown song lengths", "query", query, "artist", s.artist, "track", s.track)
+					if _, found := unknownTrackDurations[s.artist][s.track]; !found {
+						unknownTrackDurations[s.artist][s.track] = ""
+						c.runStats.unknownTrackDurationsCount++
+						c.log.Warn("No track duration found for query, saved to unknown track durations", "query", query, "artist", s.artist, "track", s.track)
 					}
 					continue
 				}
@@ -155,7 +162,7 @@ func Run(ctx context.Context, c *Config) error {
 				// Check if the current scrobble is a duplicate of the previous one
 				if s.artist == previousScrobble.artist && s.track == previousScrobble.track {
 					timeDiff := s.timestamp.Sub(previousScrobble.timestamp)
-					if timeDiff < s.length {
+					if timeDiff < s.duration {
 						c.log.Info("🎯 Duplicate scrobble detected!", "artist", s.artist, "track", s.track, "timestamp", s.timestamp)
 						c.runStats.deletedScrobbles = append(c.runStats.deletedScrobbles, s)
 						lastScrobbleDeleted = true
@@ -181,7 +188,7 @@ func Run(ctx context.Context, c *Config) error {
 	c.runStats.elapsedTime = time.Since(c.startTime)
 	logStats(c)
 
-	err = writeUnknownSongLengths(unknownSongLengths)
+	err = writeUnknownTrackDurations(unknownTrackDurations)
 	if err != nil {
 		return err
 	}
@@ -191,7 +198,12 @@ func Run(ctx context.Context, c *Config) error {
 
 func generateScrobble(row string) (scrobble, error) {
 	// Execute xpath on the row
-	artist, track, timestamp, timestampStr := "", "", time.Time{}, ""
+	var (
+		artist       string
+		track        string
+		timestamp    time.Time
+		timestampStr string
+	)
 
 	doc, err := htmlquery.Parse(strings.NewReader(row))
 	if err != nil {
@@ -233,8 +245,8 @@ func generateScrobble(row string) (scrobble, error) {
 	}, nil
 }
 
-func getSongLengthFromMusicBrainz(ctx context.Context, c *Config, query string, queryHash []byte) (time.Duration, error) {
-	length := -1
+func getTrackDurationsFromMusicBrainz(ctx context.Context, c *Config, query string, queryHash []byte) (time.Duration, error) {
+	duration := -1
 
 	resp, err := c.mb.SearchRecording(query, -1, -1)
 	if err != nil {
@@ -247,15 +259,18 @@ func getSongLengthFromMusicBrainz(ctx context.Context, c *Config, query string, 
 		if len(resp.Recordings) > 1 {
 			c.log.Info("Multiple MusicBrainz recordings found, using the first one", "query", query, "count", len(resp.Recordings))
 			for i, rec := range resp.Recordings {
-				c.log.Debug("Recording", "index", i, "artist", rec.ArtistCredit.NameCredits, "track", rec.Title, "length", rec.Length)
+				c.log.Debug("Recording", "index", i, "artist", rec.ArtistCredit.NameCredits, "track", rec.Title, "duration", rec.Length)
 			}
 		}
-		length = resp.Recordings[0].Length
+		duration = resp.Recordings[0].Length
 	}
 
-	c.cache.Set(ctx, fmt.Sprintf("mbquery:%x", queryHash), fmt.Sprintf("%d", length))
+	err = c.cache.Set(ctx, fmt.Sprintf("mbquery:%x", queryHash), fmt.Sprintf("%d", duration))
+	if err != nil {
+		c.log.Error("Failed to cache track duration", "error", err)
+	}
 	time.Sleep(200 * time.Millisecond) // Sleep to avoid hitting the API too fast
-	return time.Duration(length) * time.Millisecond, nil
+	return time.Duration(duration) * time.Millisecond, nil
 }
 
 func deleteScrobble(c *Config, timestamp string, delete bool) error {
@@ -294,36 +309,36 @@ func logStats(c *Config) {
 	c.log.Info(fmt.Sprintf("MusicBrainz API cache misses: %d", c.runStats.cacheMisses))
 	c.log.Info(fmt.Sprintf("Scrobbles processed: %d", c.runStats.processedScrobbles))
 	c.log.Info(fmt.Sprintf("Scrobbles deleted (if delete enabled): %d", len(c.runStats.deletedScrobbles)))
-	c.log.Info(fmt.Sprintf("Unknown length song count: %d", c.runStats.unknownLengthSongCount))
+	c.log.Info(fmt.Sprintf("Unknown duration track count: %d", c.runStats.unknownTrackDurationsCount))
 	c.log.Info(fmt.Sprintf("Elapsed time: %s", c.runStats.elapsedTime.Truncate(time.Millisecond/10)))
 
 	c.log.Info("Deleted scrobbles:")
 	for _, s := range c.runStats.deletedScrobbles {
-		c.log.Info(fmt.Sprintf("Artist: %s - Song: %s - Scrobble time: %s", s.artist, s.track, s.timestamp))
+		c.log.Info(fmt.Sprintf("Artist: %s - Track: %s - Scrobble time: %s", s.artist, s.track, s.timestamp))
 	}
 }
 
-func writeUnknownSongLengths(unknownSongLengths map[string]map[string]string) error {
-	customSongLengths, err := getCustomSongLengths()
+func writeUnknownTrackDurations(unknownTrackDurations map[string]map[string]string) error {
+	userTrackDurations, err := getUserTrackDurations()
 	if err != nil {
 		return err
 	}
 
-	for artist, tracks := range customSongLengths {
-		if unknownSongLengths[artist] == nil {
-			unknownSongLengths[artist] = make(map[string]string)
+	for artist, tracks := range userTrackDurations {
+		if unknownTrackDurations[artist] == nil {
+			unknownTrackDurations[artist] = make(map[string]string)
 		}
-		maps.Copy(unknownSongLengths[artist], tracks)
+		maps.Copy(unknownTrackDurations[artist], tracks)
 	}
 
-	bytes, err := yaml.Marshal(unknownSongLengths)
+	bytes, err := yaml.Marshal(unknownTrackDurations)
 	if err != nil {
-		return fmt.Errorf("failed to marshal unknown song lengths to YAML: %v", err)
+		return fmt.Errorf("failed to marshal unknown track durations to YAML: %v", err)
 	}
 
-	err = os.WriteFile(customSongLengthFileName, bytes, 0666)
+	err = os.WriteFile(customTrackDurationsFile, bytes, 0666)
 	if err != nil {
-		return fmt.Errorf("failed to save unknown song lengths file: %v", err)
+		return fmt.Errorf("failed to save unknown track durations file: %v", err)
 	}
 	return nil
 }
@@ -345,6 +360,9 @@ func getStartingPage(c *Config) (int, error) {
 		return 0, errors.New("no pagination found on the page")
 	}
 	totalPages, err := strconv.Atoi(strings.TrimSpace(strings.Split(pageNumbers[len(pageNumbers)-1], " ")[0]))
+	if err != nil {
+		return 0, fmt.Errorf("failed to convert total pages number: %v", err)
+	}
 
 	c.log.Info("Total pages found", "pages", totalPages)
 
@@ -355,7 +373,6 @@ func getStartingPage(c *Config) (int, error) {
 		}
 		c.log.Info("Starting from page", "page", c.StartPage)
 		startingPage = c.StartPage
-		totalPages = c.StartPage
 	}
 
 	c.log.Info("Starting on page", "currentPage", startingPage)
@@ -363,20 +380,20 @@ func getStartingPage(c *Config) (int, error) {
 	return startingPage, nil
 }
 
-func getCustomSongLengths() (map[string]map[string]string, error) {
-	customSongLengthBytes, err := os.ReadFile(customSongLengthFileName)
+func getUserTrackDurations() (map[string]map[string]string, error) {
+	customTrackDurationsBytes, err := os.ReadFile(customTrackDurationsFile)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	var customSongLengths map[string]map[string]string
-	if len(customSongLengthBytes) > 0 {
-		err = yaml.Unmarshal(customSongLengthBytes, &customSongLengths)
+	var userTrackDurations map[string]map[string]string
+	if len(customTrackDurationsBytes) > 0 {
+		err = yaml.Unmarshal(customTrackDurationsBytes, &userTrackDurations)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse config file: %w", err)
 		}
 	}
-	return customSongLengths, nil
+	return userTrackDurations, nil
 }
 
 func getScrobbles(c *Config, currentPage int) ([]scrobble, error) {

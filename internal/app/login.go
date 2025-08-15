@@ -32,6 +32,6 @@ func login(ctx context.Context, c *Config) error {
 		return fmt.Errorf("failed to login to Last.fm: %w", err)
 	}
 
-	c.log.Info("Successfully logged in to Last.fm")
+	c.log.Info("Successfully logged in!")
 	return nil
 }

@@ -36,4 +36,6 @@ go.work.sum
 .envrc
 config.yaml
 tmp/
-customsonglengths.yaml
+track-durations.yaml
+.pre-commit-config.yaml
+.direnv

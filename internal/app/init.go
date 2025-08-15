@@ -49,6 +49,9 @@ func initApp(ctx context.Context, c *Config) error {
 
 		redisPassword, _ := redisURLParts.User.Password()
 		redisDB, err := strconv.Atoi(strings.Split(redisURLParts.Path, "/")[0])
+		if err != nil {
+			return fmt.Errorf("failed to extract Redis DB from URL: %v", err)
+		}
 
 		rdb := redis.NewClient(&redis.Options{
 			Addr:     redisURLParts.Host,
@@ -76,6 +79,7 @@ func initApp(ctx context.Context, c *Config) error {
 	}
 	c.mb = mb
 
+	c.log.Debug("Initializing browser")
 	var (
 		allocCtx    context.Context
 		allocCancel context.CancelFunc
@@ -95,7 +99,7 @@ func initApp(ctx context.Context, c *Config) error {
 		chromedp.WithLogf(log.Printf),
 	)
 
-	c.log.Info("Starting browser...")
+	c.log.Info("Starting browser")
 	// ensure that the browser process is started
 	if err := chromedp.Run(taskCtx); err != nil {
 		return fmt.Errorf("failed to start ChromeDP: %w", err)
