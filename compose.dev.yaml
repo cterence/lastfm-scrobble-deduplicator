@@ -1,12 +1,13 @@
+name: dev
 services:
   app:
-    container_name: app
+    container_name: app-dev
     build:
       target: development
       context: .
     environment:
       REDIS_URL: redis://redis:6379/0
-      BROWSER_URL: ws://chromium:3000?token=local
+      BROWSER_URL: ws://chromium-dev:3000?token=local
     volumes:
       - ./:/app
     depends_on:
@@ -16,7 +17,7 @@ services:
         condition: service_healthy
 
   redis:
-    container_name: redis
+    container_name: redis-dev
     image: redis:latest
     ports:
       - "6379:6379"
@@ -29,14 +30,17 @@ services:
       - redis-data:/data
 
   chromium:
-    container_name: chromium
-    image: ghcr.io/browserless/chromium
+    container_name: chromium-dev
+    image: ghcr.io/browserless/chromium:latest
+    ports:
+      - 3000:3000
     environment:
       TOKEN: local
-      HOST: chromium
+      TIMEOUT: 600000
+      HOST: chromium-dev
       DEBUG: -*
     healthcheck:
-      test: ["CMD", "curl", "localhost:3000/active?token=local"]
+      test: ["CMD", "curl", "http://chromium-dev:3000/active?token=local"]
       interval: 10s
       timeout: 5s
       retries: 3

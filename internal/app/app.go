@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,13 +30,12 @@ type Config struct {
 	LastFMPassword string
 	Delete         bool
 	StartPage      int
-	NoHeadless     bool
+	BrowserHeadful bool
 	RedisURL       string
 	BrowserURL     string
 	LogLevel       string
 
 	// Internal dependencies
-	log       *slog.Logger
 	startTime time.Time
 	cache     cache.Cache
 	runStats  stats
@@ -64,12 +64,15 @@ type scrobble struct {
 	duration        time.Duration
 }
 
-const customTrackDurationsFile = "track-durations.yaml"
+const (
+	customTrackDurationsFile = "track-durations.yaml"
+	browserOperationsTimeout = 30 * time.Second
+)
 
 func Run(ctx context.Context, c *Config) error {
 	err := initApp(ctx, c)
 	if err != nil {
-		return fmt.Errorf("failed to init app: %v", err)
+		return fmt.Errorf("failed to init app: %w", err)
 	}
 	defer c.allocCancel()
 	defer c.taskCancel()
@@ -81,12 +84,12 @@ func Run(ctx context.Context, c *Config) error {
 
 	startingPage, err := getStartingPage(c)
 	if err != nil {
-		return fmt.Errorf("failed to get starting page: %v", err)
+		return fmt.Errorf("failed to get starting page: %w", err)
 	}
 
 	userTrackDurations, err := getUserTrackDurations()
 	if err != nil {
-		return fmt.Errorf("failed to get user track durations: %v", err)
+		return fmt.Errorf("failed to get user track durations: %w", err)
 	}
 	unknownTrackDurations := make(map[string]map[string]string, 0)
 
@@ -94,7 +97,7 @@ func Run(ctx context.Context, c *Config) error {
 	var lastScrobbleDeleted bool
 
 	for currentPage := startingPage; currentPage > 0; currentPage-- {
-		c.log.Info("Processing page", "page", currentPage)
+		slog.Info("Processing page", "page", currentPage)
 		scrobbles, err := getScrobbles(c, currentPage)
 		if err != nil {
 			return err
@@ -105,10 +108,10 @@ func Run(ctx context.Context, c *Config) error {
 				// Convert to duration with 4m0s format
 				trackDuration, err := time.ParseDuration(userTrackDurations[s.artist][s.track])
 				if err != nil {
-					c.log.Error("Failed to parse user duration", "artist", s.artist, "track", s.track, "error", err)
+					slog.Error("Failed to parse user duration", "artist", s.artist, "track", s.track, "error", err)
 				}
 				s.duration = trackDuration
-				c.log.Debug("Found track duration in user track durations", "artist", s.artist, "track", s.track, "duration", s.duration)
+				slog.Debug("Found track duration in user track durations", "artist", s.artist, "track", s.track, "duration", s.duration)
 			} else {
 				query := fmt.Sprintf(`artist:"%s" AND recording:"%s"`, s.artist, s.track)
 				// Hash the query
@@ -120,29 +123,29 @@ func Run(ctx context.Context, c *Config) error {
 				if err != nil {
 					if errors.Is(err, cache.ErrCacheMiss) {
 						c.runStats.cacheMisses++
-						c.log.Debug("Cache miss for track duration query", "artist", s.artist, "track", s.track, "duration", s.duration)
-						TrackDurations, err := backoff.Retry(ctx, func() (time.Duration, error) {
+						slog.Debug("Cache miss for track duration query", "artist", s.artist, "track", s.track, "duration", s.duration)
+						trackDurations, err := backoff.Retry(ctx, func() (time.Duration, error) {
 							return getTrackDurationsFromMusicBrainz(ctx, c, query, queryHash)
 						}, backoff.WithBackOff(backoff.NewExponentialBackOff()), backoff.WithMaxTries(10))
 						if err != nil {
-							c.log.Error("failed to get track duration from MusicBrainz API", "error", err)
+							slog.Error("failed to get track duration from MusicBrainz API", "error", err)
 							continue
 						}
-						s.duration = TrackDurations
-						c.log.Debug("Found track duration from MusicBrainz API", "artist", s.artist, "track", s.track, "duration", s.duration)
+						s.duration = trackDurations
+						slog.Debug("Found track duration from MusicBrainz API", "artist", s.artist, "track", s.track, "duration", s.duration)
 					} else {
-						c.log.Error("Failed to get cached track duration", "query", query, "error", err)
+						slog.Error("Failed to get cached track duration", "query", query, "error", err)
 						continue
 					}
 				} else {
 					c.runStats.cacheHits++
 					cachedTrackDurations, err := strconv.Atoi(val)
 					if err != nil {
-						c.log.Error("Failed to parse cached duration", "query", query, "error", err)
+						slog.Error("Failed to parse cached duration", "query", query, "error", err)
 						continue
 					}
 					s.duration = time.Duration(cachedTrackDurations) * time.Millisecond
-					c.log.Debug("Cache hit for track duration query", "artist", s.artist, "track", s.track, "duration", s.duration)
+					slog.Debug("Cache hit for track duration query", "artist", s.artist, "track", s.track, "duration", s.duration)
 				}
 				if s.duration < 0 {
 					if unknownTrackDurations[s.artist] == nil {
@@ -151,7 +154,7 @@ func Run(ctx context.Context, c *Config) error {
 					if _, found := unknownTrackDurations[s.artist][s.track]; !found {
 						unknownTrackDurations[s.artist][s.track] = ""
 						c.runStats.unknownTrackDurationsCount++
-						c.log.Warn("No track duration found for query, saved to unknown track durations", "query", query, "artist", s.artist, "track", s.track)
+						slog.Warn("No track duration found for query, saved to unknown track durations", "query", query, "artist", s.artist, "track", s.track)
 					}
 					continue
 				}
@@ -160,18 +163,20 @@ func Run(ctx context.Context, c *Config) error {
 			lastScrobbleDeleted = false
 			if previousScrobble != nil {
 				// Check if the current scrobble is a duplicate of the previous one
-				if s.artist == previousScrobble.artist && s.track == previousScrobble.track {
+				if s.artist == previousScrobble.artist && s.track == previousScrobble.track && s.timestamp != previousScrobble.timestamp {
 					timeDiff := s.timestamp.Sub(previousScrobble.timestamp)
 					if timeDiff < s.duration {
-						c.log.Info("🎯 Duplicate scrobble detected!", "artist", s.artist, "track", s.track, "timestamp", s.timestamp)
+						slog.Info("🎯 Duplicate scrobble detected!", "artist", s.artist, "track", s.track, "timestamp", s.timestamp)
 						c.runStats.deletedScrobbles = append(c.runStats.deletedScrobbles, s)
 						lastScrobbleDeleted = true
-						err = deleteScrobble(c, s.timestampString, c.Delete)
+						_, err = backoff.Retry(ctx, func() (struct{}, error) {
+							return struct{}{}, deleteScrobble(c, s.timestampString, c.Delete)
+						}, backoff.WithMaxTries(5))
 						if err != nil {
-							c.log.Error("Failed to delete duplicate scrobble", "artist", s.artist, "track", s.track, "timestamp", s.timestamp, "error", err)
+							slog.Error("Failed to delete duplicate scrobble", "artist", s.artist, "track", s.track, "timestamp", s.timestamp, "error", err)
 						}
 						if c.Delete {
-							c.log.Info("Scrobble deleted", "artist", s.artist, "track", s.track, "timestamp", s.timestamp)
+							slog.Info("Scrobble deleted", "artist", s.artist, "track", s.track, "timestamp", s.timestamp)
 						}
 					}
 				}
@@ -183,7 +188,7 @@ func Run(ctx context.Context, c *Config) error {
 		}
 	}
 
-	c.log.Info("Completed!")
+	slog.Info("Completed!")
 
 	c.runStats.elapsedTime = time.Since(c.startTime)
 	logStats(c)
@@ -214,14 +219,14 @@ func generateScrobble(row string) (scrobble, error) {
 	if artistNode != nil {
 		artist = strings.TrimSpace(htmlquery.SelectAttr(artistNode, "value"))
 	} else {
-		return scrobble{}, fmt.Errorf("artist not found in row: %v", row)
+		return scrobble{}, fmt.Errorf("artist not found in row: %s", row)
 	}
 
 	trackNode := htmlquery.FindOne(doc, `.//input[@name='track_name']`)
 	if trackNode != nil {
 		track = strings.TrimSpace(htmlquery.SelectAttr(trackNode, "value"))
 	} else {
-		return scrobble{}, fmt.Errorf("track not found in row: %v", row)
+		return scrobble{}, fmt.Errorf("track not found in row: %s", row)
 	}
 
 	timestampNode := htmlquery.FindOne(doc, `.//input[@name='timestamp']`)
@@ -234,7 +239,7 @@ func generateScrobble(row string) (scrobble, error) {
 		}
 		timestamp = time.Unix(timestampInt, 0)
 	} else {
-		return scrobble{}, fmt.Errorf("timestamp not found in row: %v", row)
+		return scrobble{}, fmt.Errorf("timestamp not found in row: %s", row)
 	}
 
 	return scrobble{
@@ -254,12 +259,12 @@ func getTrackDurationsFromMusicBrainz(ctx context.Context, c *Config, query stri
 	}
 
 	if len(resp.Recordings) == 0 {
-		c.log.Warn("No MusicBrainz recordings found for query", "query", query)
+		slog.Warn("No MusicBrainz recordings found for query", "query", query)
 	} else {
 		if len(resp.Recordings) > 1 {
-			c.log.Info("Multiple MusicBrainz recordings found, using the first one", "query", query, "count", len(resp.Recordings))
+			slog.Debug("Multiple MusicBrainz recordings found, using the first one", "query", query, "count", len(resp.Recordings))
 			for i, rec := range resp.Recordings {
-				c.log.Debug("Recording", "index", i, "artist", rec.ArtistCredit.NameCredits, "track", rec.Title, "duration", rec.Length)
+				slog.Debug("Recording", "index", i, "artist", rec.ArtistCredit.NameCredits, "track", rec.Title, "duration", rec.Length)
 			}
 		}
 		duration = resp.Recordings[0].Length
@@ -267,22 +272,23 @@ func getTrackDurationsFromMusicBrainz(ctx context.Context, c *Config, query stri
 
 	err = c.cache.Set(ctx, fmt.Sprintf("mbquery:%x", queryHash), fmt.Sprintf("%d", duration))
 	if err != nil {
-		c.log.Error("Failed to cache track duration", "error", err)
+		slog.Error("Failed to cache track duration", "error", err)
 	}
-	time.Sleep(200 * time.Millisecond) // Sleep to avoid hitting the API too fast
 	return time.Duration(duration) * time.Millisecond, nil
 }
 
 func deleteScrobble(c *Config, timestamp string, delete bool) error {
-	timeoutCtx, cancel := context.WithTimeout(c.taskCtx, 5*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(c.taskCtx, browserOperationsTimeout)
 	defer cancel()
 
 	xpathPrefix := `//input[@value='` + timestamp + `']`
 
-	// FIXME: first click is flaky
+	slog.Debug("Attempting to delete scrobble", "timestamp", timestamp)
 	err := chromedp.Run(timeoutCtx,
+		// Click away to close any previous popup
+		chromedp.MouseClickXY(0, 0),
 		chromedp.Click(xpathPrefix+`/../../../../button`, chromedp.BySearch),
-		chromedp.Sleep(200*time.Millisecond), // Wait for the hover effect to take place
+		chromedp.WaitVisible(`//tr[contains(@class,'show-focus-controls')]`, chromedp.BySearch),
 		chromedp.Click(xpathPrefix+`/../../../../button`, chromedp.BySearch),
 		chromedp.WaitVisible(xpathPrefix+`/../button`, chromedp.BySearch),
 	)
@@ -291,7 +297,7 @@ func deleteScrobble(c *Config, timestamp string, delete bool) error {
 	}
 
 	if !delete {
-		c.log.Info("Scrobble deletion skipped")
+		slog.Info("Scrobble deletion skipped")
 		return nil
 	}
 	err = chromedp.Run(timeoutCtx,
@@ -305,16 +311,16 @@ func deleteScrobble(c *Config, timestamp string, delete bool) error {
 }
 
 func logStats(c *Config) {
-	c.log.Info(fmt.Sprintf("MusicBrainz API cache hits: %d", c.runStats.cacheHits))
-	c.log.Info(fmt.Sprintf("MusicBrainz API cache misses: %d", c.runStats.cacheMisses))
-	c.log.Info(fmt.Sprintf("Scrobbles processed: %d", c.runStats.processedScrobbles))
-	c.log.Info(fmt.Sprintf("Scrobbles deleted (if delete enabled): %d", len(c.runStats.deletedScrobbles)))
-	c.log.Info(fmt.Sprintf("Unknown duration track count: %d", c.runStats.unknownTrackDurationsCount))
-	c.log.Info(fmt.Sprintf("Elapsed time: %s", c.runStats.elapsedTime.Truncate(time.Millisecond/10)))
+	slog.Info(fmt.Sprintf("MusicBrainz API cache hits: %d", c.runStats.cacheHits))
+	slog.Info(fmt.Sprintf("MusicBrainz API cache misses: %d", c.runStats.cacheMisses))
+	slog.Info(fmt.Sprintf("Scrobbles processed: %d", c.runStats.processedScrobbles))
+	slog.Info(fmt.Sprintf("Scrobbles deleted (if delete enabled): %d", len(c.runStats.deletedScrobbles)))
+	slog.Info(fmt.Sprintf("Unknown duration track count: %d", c.runStats.unknownTrackDurationsCount))
+	slog.Info(fmt.Sprintf("Elapsed time: %s", c.runStats.elapsedTime.Truncate(time.Millisecond/10)))
 
-	c.log.Info("Deleted scrobbles:")
+	slog.Info("Deleted scrobbles:")
 	for _, s := range c.runStats.deletedScrobbles {
-		c.log.Info(fmt.Sprintf("Artist: %s - Track: %s - Scrobble time: %s", s.artist, s.track, s.timestamp))
+		fmt.Printf("Artist: %s - Track: %s - Scrobble time: %s\n", s.artist, s.track, s.timestamp)
 	}
 }
 
@@ -333,18 +339,26 @@ func writeUnknownTrackDurations(unknownTrackDurations map[string]map[string]stri
 
 	bytes, err := yaml.Marshal(unknownTrackDurations)
 	if err != nil {
-		return fmt.Errorf("failed to marshal unknown track durations to YAML: %v", err)
+		return fmt.Errorf("failed to marshal unknown track durations to YAML: %w", err)
 	}
+
+	bytes = append([]byte("# This file lists tracks that the program could not find a duration for using the MusicBrainz API\n# If a track has an unknown duration, this program will never delete its duplicate scrobbles\n# Specify the duration of each track using the Go time ParseDuration format (ex: 5m06s), then rerun the program\n# You may use it to override a track length, but you must strictly match the scrobble's artist and track name\n\n"), bytes...)
 
 	err = os.WriteFile(customTrackDurationsFile, bytes, 0666)
 	if err != nil {
-		return fmt.Errorf("failed to save unknown track durations file: %v", err)
+		if errors.Is(err, os.ErrPermission) {
+			slog.Warn(fmt.Sprintf("Failed to save unknown track durations in %s", customTrackDurationsFile), "error", err)
+			slog.Info(fmt.Sprintf(`Save the following YAML in a file named "%s" in this program's directory and follow the instructions`, customTrackDurationsFile))
+			fmt.Println("\n" + string(bytes))
+			return nil
+		}
+		return fmt.Errorf("failed to save unknown track durations file: %w", err)
 	}
 	return nil
 }
 
 func getStartingPage(c *Config) (int, error) {
-	timeoutCtx, cancel := context.WithTimeout(c.taskCtx, 10*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(c.taskCtx, browserOperationsTimeout)
 	defer cancel()
 
 	var pageNumbers []string
@@ -361,27 +375,31 @@ func getStartingPage(c *Config) (int, error) {
 	}
 	totalPages, err := strconv.Atoi(strings.TrimSpace(strings.Split(pageNumbers[len(pageNumbers)-1], " ")[0]))
 	if err != nil {
-		return 0, fmt.Errorf("failed to convert total pages number: %v", err)
+		return 0, fmt.Errorf("failed to convert total pages number: %w", err)
 	}
 
-	c.log.Info("Total pages found", "pages", totalPages)
+	slog.Info("Total pages found", "pages", totalPages)
 
 	startingPage := totalPages
 	if c.StartPage != 0 {
 		if c.StartPage > totalPages {
 			return 0, fmt.Errorf("start page %d exceeds total pages %d", c.StartPage, totalPages)
 		}
-		c.log.Info("Starting from page", "page", c.StartPage)
+		slog.Info("Starting from page", "page", c.StartPage)
 		startingPage = c.StartPage
 	}
 
-	c.log.Info("Starting on page", "currentPage", startingPage)
+	slog.Info("Starting on page", "currentPage", startingPage)
 
 	return startingPage, nil
 }
 
 func getUserTrackDurations() (map[string]map[string]string, error) {
-	customTrackDurationsBytes, err := os.ReadFile(customTrackDurationsFile)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current working directory: %w", err)
+	}
+	customTrackDurationsBytes, err := os.ReadFile(path.Join(cwd, customTrackDurationsFile))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
@@ -397,7 +415,7 @@ func getUserTrackDurations() (map[string]map[string]string, error) {
 }
 
 func getScrobbles(c *Config, currentPage int) ([]scrobble, error) {
-	timeoutCtx, timeoutCancel := context.WithTimeout(c.taskCtx, 15*time.Minute)
+	timeoutCtx, timeoutCancel := context.WithTimeout(c.taskCtx, browserOperationsTimeout)
 	defer timeoutCancel()
 
 	err := chromedp.Run(timeoutCtx,
@@ -408,7 +426,7 @@ func getScrobbles(c *Config, currentPage int) ([]scrobble, error) {
 		chromedp.Evaluate("let node2 = document.querySelector('.masthead'); node2.parentNode.removeChild(node2)", nil),
 	)
 	if err != nil {
-		c.log.Error("Failed to navigate to page", "page", currentPage, "error", err)
+		slog.Error("Failed to navigate to page", "page", currentPage, "error", err)
 	}
 
 	var scrobbleRows []string
@@ -421,14 +439,14 @@ func getScrobbles(c *Config, currentPage int) ([]scrobble, error) {
 
 	scrobbles := []scrobble{}
 
-	c.log.Info("Scrobbles found on page", "count", len(scrobbleRows))
+	slog.Info("Scrobbles found on page", "count", len(scrobbleRows))
 	for _, row := range scrobbleRows {
 		scrobble, err := generateScrobble(row)
 		if err != nil {
-			c.log.Error("Failed to generate scrobble", "error", err)
+			slog.Error("Failed to generate scrobble", "error", err)
 			continue
 		}
-		c.log.Debug("Generated scrobble", "artist", scrobble.artist, "track", scrobble.track, "timestamp", scrobble.timestamp)
+		slog.Debug("Generated scrobble", "artist", scrobble.artist, "track", scrobble.track, "timestamp", scrobble.timestamp)
 		scrobbles = append(scrobbles, scrobble)
 	}
 

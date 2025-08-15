@@ -1,6 +1,5 @@
-# Scrobble Deduplicator
+# Last.fm Scrobble Deduplicator
 
 ## TODO
 
-- Fully containerized setup with app and browser
-- Rename song length ?
+- A good readme (why : some scrobblers create duplicates, more annoying to fix scrobblers than to just delete the scrobbles periodically)

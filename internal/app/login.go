@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -12,9 +13,9 @@ import (
 const lastFMLoginURL = "https://www.last.fm/login"
 
 func login(ctx context.Context, c *Config) error {
-	c.log.Info("Navigating to Last.fm login page", "url", lastFMLoginURL)
+	slog.Info("Navigating to Last.fm login page", "url", lastFMLoginURL)
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(ctx, browserOperationsTimeout)
 	defer cancel()
 
 	err := chromedp.Run(timeoutCtx,
@@ -32,6 +33,6 @@ func login(ctx context.Context, c *Config) error {
 		return fmt.Errorf("failed to login to Last.fm: %w", err)
 	}
 
-	c.log.Info("Successfully logged in!")
+	slog.Info("Successfully logged in!")
 	return nil
 }

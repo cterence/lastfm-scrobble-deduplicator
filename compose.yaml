@@ -1,17 +1,20 @@
+name: prod
 services:
   app:
-    container_name: app
+    container_name: app-prod
     build:
       context: .
+      target: production
     command:
       - /app/main
       - -c
       - config.yaml
     environment:
       REDIS_URL: redis://redis:6379/0
-      BROWSER_URL: ws://chromium:3000?token=local
+      BROWSER_URL: ws://chromium-prod:3000?token=local
     volumes:
-      - ./config.yaml:/app/config.yaml
+      - ./config.yaml:/app/config.yaml:ro
+      - ./track-durations.yaml:/app/track-durations.yaml:rw
     depends_on:
       redis:
         condition: service_healthy
@@ -19,7 +22,7 @@ services:
         condition: service_healthy
 
   redis:
-    container_name: redis
+    container_name: redis-prod
     image: redis:latest
     ports:
       - "6379:6379"
@@ -32,13 +35,15 @@ services:
       - redis-data:/data
 
   chromium:
-    container_name: chromium
-    image: ghcr.io/browserless/chromium
+    container_name: chromium-prod
+    image: ghcr.io/browserless/chromium:latest
     environment:
       TOKEN: local
-      HOST: chromium
+      HOST: chromium-prod
+      DEBUG: -*
+      TIMEOUT: 600000
     healthcheck:
-      test: ["CMD", "curl", "localhost:3000/active?token=local"]
+      test: ["CMD", "curl", "http://chromium-prod:3000/active?token=local"]
       interval: 10s
       timeout: 5s
       retries: 3

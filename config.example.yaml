@@ -1,8 +1,10 @@
-cache: redis # redis|inmemory
+cacheType: inmemory # redis|inmemory
 lastfm:
   username: musiclover
   password: secret!
 startPage: 15
-noHeadless: true
-redisURL: redis://localhost:6379/0
+browserHeadful: true
+redisURL: "" # redis://localhost:6379/0
 logLevel: info
+delete: false
+browserURL: "" # ws://localhost:3000?token=local

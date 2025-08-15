@@ -35,22 +35,22 @@ func initApp(ctx context.Context, c *Config) error {
 	logOpts := slog.HandlerOptions{
 		Level: slogLogLevel,
 	}
-	c.log = slog.New(slog.NewTextHandler(os.Stdout, &logOpts))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &logOpts)))
 
 	c.startTime = time.Now()
 
 	switch c.CacheType {
 	case "redis":
-		c.log.Info("Using Redis cache")
+		slog.Info("Using Redis cache")
 		redisURLParts, err := url.Parse(c.RedisURL)
 		if err != nil {
-			return fmt.Errorf("failed to parse Redis URL: %v", err)
+			return fmt.Errorf("failed to parse Redis URL: %w", err)
 		}
 
 		redisPassword, _ := redisURLParts.User.Password()
-		redisDB, err := strconv.Atoi(strings.Split(redisURLParts.Path, "/")[0])
+		redisDB, err := strconv.Atoi(strings.Split(redisURLParts.Path, "/")[1])
 		if err != nil {
-			return fmt.Errorf("failed to extract Redis DB from URL: %v", err)
+			return fmt.Errorf("failed to extract Redis DB from URL: %w", err)
 		}
 
 		rdb := redis.NewClient(&redis.Options{
@@ -63,11 +63,11 @@ func initApp(ctx context.Context, c *Config) error {
 		// Test the connection
 		status := rdb.Ping(ctx)
 		if status.Err() != nil {
-			return fmt.Errorf("failed to connect to Redis: %v", status.Err())
+			return fmt.Errorf("failed to connect to Redis: %w", status.Err())
 		}
 		c.cache = cache.NewRedis(rdb)
 	case "inmemory":
-		c.log.Info("Using in-memory cache")
+		slog.Info("Using in-memory cache")
 		c.cache = cache.NewInMemory()
 	default:
 		return fmt.Errorf("unsupported cache type: %s", c.CacheType)
@@ -79,7 +79,6 @@ func initApp(ctx context.Context, c *Config) error {
 	}
 	c.mb = mb
 
-	c.log.Debug("Initializing browser")
 	var (
 		allocCtx    context.Context
 		allocCancel context.CancelFunc
@@ -88,7 +87,7 @@ func initApp(ctx context.Context, c *Config) error {
 		allocCtx, allocCancel = chromedp.NewRemoteAllocator(ctx, c.BrowserURL, chromedp.NoModifyURL)
 	} else {
 		opts := append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.Flag("headless", !c.NoHeadless),
+			chromedp.Flag("headless", !c.BrowserHeadful),
 		)
 		allocCtx, allocCancel = chromedp.NewExecAllocator(ctx, opts...)
 	}
@@ -99,7 +98,7 @@ func initApp(ctx context.Context, c *Config) error {
 		chromedp.WithLogf(log.Printf),
 	)
 
-	c.log.Info("Starting browser")
+	slog.Info("Starting browser")
 	// ensure that the browser process is started
 	if err := chromedp.Run(taskCtx); err != nil {
 		return fmt.Errorf("failed to start ChromeDP: %w", err)

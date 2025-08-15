@@ -18,7 +18,7 @@ func main() {
 		lastFMUsername string
 		lastFMPassword string
 		startPage      int
-		noHeadless     bool
+		browserHeadful bool
 		browserURL     string
 		redisURL       string
 		delete         bool
@@ -37,56 +37,57 @@ func main() {
 				Destination: &configFilePath,
 			},
 			&cli.StringFlag{
-				Name:        "cache",
-				Usage:       "Cache type (redis|inmemory)",
-				Sources:     cli.NewValueSourceChain(yaml.YAML("cache", altsrc.NewStringPtrSourcer(&configFilePath))),
-				Destination: &cacheType,
-			},
-			&cli.StringFlag{
 				Name:        "lastfm-username",
 				Aliases:     []string{"u"},
 				Usage:       "Last.fm username",
-				Sources:     cli.NewValueSourceChain(yaml.YAML("lastfm.username", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("LASTFM_USERNAME"), yaml.YAML("lastfm.username", altsrc.NewStringPtrSourcer(&configFilePath))),
 				Destination: &lastFMUsername,
 			},
 			&cli.StringFlag{
 				Name:        "lastfm-password",
 				Aliases:     []string{"p"},
 				Usage:       "Last.fm password",
-				Sources:     cli.NewValueSourceChain(yaml.YAML("lastfm.password", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("LASTFM_PASSWORD"), yaml.YAML("lastfm.password", altsrc.NewStringPtrSourcer(&configFilePath))),
 				Destination: &lastFMPassword,
-			},
-			&cli.IntFlag{
-				Name:        "start-page",
-				Aliases:     []string{"s"},
-				Usage:       "Page to start from",
-				Sources:     cli.NewValueSourceChain(yaml.YAML("startPage", altsrc.NewStringPtrSourcer(&configFilePath))),
-				Destination: &startPage,
-			},
-			&cli.BoolFlag{
-				Name:        "no-headless",
-				Usage:       "Run with browser UI",
-				Sources:     cli.NewValueSourceChain(yaml.YAML("noHeadless", altsrc.NewStringPtrSourcer(&configFilePath))),
-				Destination: &noHeadless,
-			},
-			&cli.StringFlag{
-				Name:        "redis-url",
-				Usage:       "Redis URL",
-				Sources:     cli.NewValueSourceChain(cli.EnvVar("REDIS_URL"), yaml.YAML("redisURL", altsrc.NewStringPtrSourcer(&configFilePath))),
-				Destination: &redisURL,
 			},
 			&cli.BoolFlag{
 				Name:        "delete",
 				Usage:       "Delete duplicate scrobbles",
 				Value:       false,
-				Sources:     cli.NewValueSourceChain(yaml.YAML("delete", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("DELETE"), yaml.YAML("delete", altsrc.NewStringPtrSourcer(&configFilePath))),
 				Destination: &delete,
+			},
+			&cli.IntFlag{
+				Name:        "start-page",
+				Aliases:     []string{"s"},
+				Usage:       "Last.fm scrobble library page to start from",
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("START_PAGE"), yaml.YAML("startPage", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &startPage,
+			},
+			&cli.StringFlag{
+				Name:        "cache-type",
+				Usage:       "Cache type (inmemory, redis) (must specify redis-url flag for redis)",
+				Value:       "inmemory",
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("CACHE_TYPE"), yaml.YAML("cacheType", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &cacheType,
+			},
+			&cli.BoolFlag{
+				Name:        "browser-headful",
+				Usage:       "Run with a visible browser UI",
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("BROWSER_HEADFUL"), yaml.YAML("browserHeadful", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &browserHeadful,
 			},
 			&cli.StringFlag{
 				Name:        "browser-url",
-				Usage:       "Browser URL",
+				Usage:       "Remote browser URL",
 				Sources:     cli.NewValueSourceChain(cli.EnvVar("BROWSER_URL"), yaml.YAML("browserURL", altsrc.NewStringPtrSourcer(&configFilePath))),
 				Destination: &browserURL,
+			},
+			&cli.StringFlag{
+				Name:        "redis-url",
+				Usage:       "Redis URL for redis cache type",
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("REDIS_URL"), yaml.YAML("redisURL", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &redisURL,
 			},
 			&cli.StringFlag{
 				Name:        "log-level",
@@ -105,12 +106,13 @@ func main() {
 				LastFMUsername: lastFMUsername,
 				LastFMPassword: lastFMPassword,
 				StartPage:      startPage,
-				NoHeadless:     noHeadless,
+				BrowserHeadful: browserHeadful,
 				RedisURL:       redisURL,
 				BrowserURL:     browserURL,
 				Delete:         delete,
 				LogLevel:       logLevel,
 			}
+
 			return app.Run(ctx, &config)
 		},
 	}
