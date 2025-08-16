@@ -79,9 +79,11 @@ func Run(ctx context.Context, c *Config) error {
 	c.runStats.elapsedTime = time.Since(c.startTime)
 	logStats(c)
 
-	err = writeUnknownTrackDurations(unknownTrackDurations)
-	if err != nil {
-		return err
+	if len(unknownTrackDurations) > 0 {
+		err = writeUnknownTrackDurations(unknownTrackDurations)
+		if err != nil {
+			return err
+		}
 	}
 
 	slog.Info("Exiting")
