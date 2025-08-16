@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
-
-	"github.com/cenkalti/backoff/v5"
 )
 
 func Run(ctx context.Context, c *Config) error {
@@ -44,7 +42,6 @@ func Run(ctx context.Context, c *Config) error {
 	unknownTrackDurations := make(durationByTrackByArtist, 0)
 
 	var previousScrobble *scrobble
-	var lastScrobbleDeleted bool
 
 	for currentPage := startingPage; currentPage > 0; currentPage-- {
 		slog.Info("Processing page", "page", currentPage)
@@ -62,28 +59,15 @@ func Run(ctx context.Context, c *Config) error {
 			}
 			slog.Debug("Track duration found", "artist", s.artist, "track", s.track, "duration", s.duration)
 
-			lastScrobbleDeleted = false
+			lastScrobbleDeleted := false
 			if previousScrobble != nil {
 				// Check if the current scrobble is a duplicate of the previous one
-				if s.artist == previousScrobble.artist && s.track == previousScrobble.track && s.timestamp != previousScrobble.timestamp {
-					timeDiff := s.timestamp.Sub(previousScrobble.timestamp)
-					if timeDiff < s.duration {
-						slog.Info("🎯 Duplicate scrobble detected!", "artist", s.artist, "track", s.track, "timestamp", s.timestamp)
-						c.runStats.deletedScrobbles = append(c.runStats.deletedScrobbles, s)
-						lastScrobbleDeleted = true
-						_, err = backoff.Retry(ctx, func() (struct{}, error) {
-							return struct{}{}, deleteScrobble(c, s.timestampString, c.Delete)
-						}, backoff.WithMaxTries(5))
-						if err != nil {
-							slog.Error("Failed to delete duplicate scrobble", "artist", s.artist, "track", s.track, "timestamp", s.timestamp, "error", err)
-						}
-						if c.Delete {
-							slog.Info("Scrobble deleted", "artist", s.artist, "track", s.track, "timestamp", s.timestamp)
-						}
-					}
+				lastScrobbleDeleted, err = detectAndDeleteDuplicateScrobble(ctx, c, previousScrobble, s)
+				if err != nil {
+					slog.Warn("failed to detect and delete duplicated scrobble", "error", err)
 				}
 			}
-			if !lastScrobbleDeleted {
+			if !lastScrobbleDeleted || previousScrobble == nil {
 				previousScrobble = &s
 			}
 			c.runStats.processedScrobbles++
@@ -99,6 +83,8 @@ func Run(ctx context.Context, c *Config) error {
 	if err != nil {
 		return err
 	}
+
+	slog.Info("Exiting")
 
 	return nil
 }

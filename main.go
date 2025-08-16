@@ -13,20 +13,44 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
+func setLogger(logLevel string) error {
+	var slogLogLevel slog.Level
+
+	switch logLevel {
+	case "debug":
+		slogLogLevel = slog.LevelDebug
+	case "info":
+		slogLogLevel = slog.LevelInfo
+	case "warn":
+		slogLogLevel = slog.LevelWarn
+	case "error":
+		slogLogLevel = slog.LevelError
+	default:
+		return fmt.Errorf("unknown log level: %s", logLevel)
+	}
+	logOpts := slog.HandlerOptions{
+		Level: slogLogLevel,
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &logOpts)))
+
+	return nil
+}
+
 func main() {
 	var (
-		configFilePath string
-		cacheType      string
-		lastFMUsername string
-		lastFMPassword string
-		startPage      int
-		startDay       time.Time
-		endDay         time.Time
-		browserHeadful bool
-		browserURL     string
-		redisURL       string
-		delete         bool
-		logLevel       string
+		configFilePath     string
+		cacheType          string
+		lastFMUsername     string
+		lastFMPassword     string
+		startPage          int
+		startDay           time.Time
+		endDay             time.Time
+		browserHeadful     bool
+		browserURL         string
+		redisURL           string
+		delete             bool
+		logLevel           string
+		duplicateThreshold int
 	)
 
 	cmd := &cli.Command{
@@ -62,6 +86,13 @@ func main() {
 				Value:       false,
 				Sources:     cli.NewValueSourceChain(cli.EnvVar("DELETE"), yaml.YAML("delete", altsrc.NewStringPtrSourcer(&configFilePath))),
 				Destination: &delete,
+			},
+			&cli.IntFlag{
+				Name:        "duplicate-threshold",
+				Usage:       "Percentage of a track's duration below which two successive scrobbles are considered duplicates",
+				Value:       90,
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("DUPLICATE_THRESHOLD"), yaml.YAML("duplicateThreshold", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &duplicateThreshold,
 			},
 			&cli.IntFlag{
 				Name:        "start-page",
@@ -125,18 +156,19 @@ func main() {
 			ctx := context.Background()
 
 			c := app.Config{
-				FilePath:       configFilePath,
-				CacheType:      cacheType,
-				LastFMUsername: lastFMUsername,
-				LastFMPassword: lastFMPassword,
-				StartPage:      startPage,
-				StartDay:       startDay,
-				EndDay:         endDay,
-				BrowserHeadful: browserHeadful,
-				RedisURL:       redisURL,
-				BrowserURL:     browserURL,
-				Delete:         delete,
-				LogLevel:       logLevel,
+				FilePath:           configFilePath,
+				CacheType:          cacheType,
+				LastFMUsername:     lastFMUsername,
+				LastFMPassword:     lastFMPassword,
+				StartPage:          startPage,
+				StartDay:           startDay,
+				EndDay:             endDay,
+				BrowserHeadful:     browserHeadful,
+				RedisURL:           redisURL,
+				BrowserURL:         browserURL,
+				Delete:             delete,
+				LogLevel:           logLevel,
+				DuplicateThreshold: duplicateThreshold,
 			}
 
 			err := setLogger(c.LogLevel)
@@ -152,27 +184,4 @@ func main() {
 		slog.Error(err.Error())
 		os.Exit(1)
 	}
-}
-
-func setLogger(logLevel string) error {
-	var slogLogLevel slog.Level
-
-	switch logLevel {
-	case "debug":
-		slogLogLevel = slog.LevelDebug
-	case "info":
-		slogLogLevel = slog.LevelInfo
-	case "warn":
-		slogLogLevel = slog.LevelWarn
-	case "error":
-		slogLogLevel = slog.LevelError
-	default:
-		return fmt.Errorf("unknown log level: %s", logLevel)
-	}
-	logOpts := slog.HandlerOptions{
-		Level: slogLogLevel,
-	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &logOpts)))
-
-	return nil
 }

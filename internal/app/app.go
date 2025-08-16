@@ -25,18 +25,19 @@ import (
 
 type Config struct {
 	// Inputs
-	FilePath       string
-	CacheType      string
-	LastFMUsername string
-	LastFMPassword string
-	Delete         bool
-	StartPage      int
-	StartDay       time.Time
-	EndDay         time.Time
-	BrowserHeadful bool
-	RedisURL       string
-	BrowserURL     string
-	LogLevel       string
+	FilePath           string
+	CacheType          string
+	LastFMUsername     string
+	LastFMPassword     string
+	Delete             bool
+	StartPage          int
+	StartDay           time.Time
+	EndDay             time.Time
+	BrowserHeadful     bool
+	RedisURL           string
+	BrowserURL         string
+	LogLevel           string
+	DuplicateThreshold int
 
 	// Internal dependencies
 	startTime time.Time
@@ -398,6 +399,32 @@ func getTrackDurationsFromMusicBrainz(ctx context.Context, c *Config, query stri
 		slog.Error("Failed to cache track duration", "error", err)
 	}
 	return time.Duration(duration) * time.Millisecond, nil
+}
+
+func detectAndDeleteDuplicateScrobble(ctx context.Context, c *Config, previousScrobble *scrobble, currentScrobble scrobble) (bool, error) {
+	lastScrobbleDeleted := false
+	if currentScrobble.artist == previousScrobble.artist && currentScrobble.track == previousScrobble.track && currentScrobble.timestamp != previousScrobble.timestamp {
+		timeBetweenScrobbleStarts := currentScrobble.timestamp.Sub(previousScrobble.timestamp)
+		duplicateDurationThreshold := time.Duration(float64(currentScrobble.duration) * float64(c.DuplicateThreshold) / 100.0)
+		isDuplicate := timeBetweenScrobbleStarts < duplicateDurationThreshold
+
+		slog.Debug("duplication calculations", "previousScrobbleTimestamp", previousScrobble.timestamp, "currentScrobbleTimestamp", currentScrobble.timestamp, "timeBetweenScrobbleStarts", timeBetweenScrobbleStarts, "duplicateThreshold", c.DuplicateThreshold, "duplicateDurationThreshold", duplicateDurationThreshold, "isDuplicate", isDuplicate)
+		if isDuplicate {
+			slog.Info("🎯 Duplicate scrobble detected!", "artist", currentScrobble.artist, "track", currentScrobble.track, "timestamp", currentScrobble.timestamp)
+			c.runStats.deletedScrobbles = append(c.runStats.deletedScrobbles, currentScrobble)
+			_, err := backoff.Retry(ctx, func() (struct{}, error) {
+				return struct{}{}, deleteScrobble(c, currentScrobble.timestampString, c.Delete)
+			}, backoff.WithMaxTries(5))
+			if err != nil {
+				return false, fmt.Errorf("failed to delete duplicate scrobble: %w", err)
+			}
+			if c.Delete {
+				lastScrobbleDeleted = true
+				slog.Info("Scrobble deleted", "artist", currentScrobble.artist, "track", currentScrobble.track, "timestamp", currentScrobble.timestamp)
+			}
+		}
+	}
+	return lastScrobbleDeleted, nil
 }
 
 func deleteScrobble(c *Config, timestamp string, delete bool) error {
