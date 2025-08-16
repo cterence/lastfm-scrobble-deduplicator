@@ -30,6 +30,8 @@ type Config struct {
 	LastFMPassword string
 	Delete         bool
 	StartPage      int
+	StartDay       time.Time
+	EndDay         time.Time
 	BrowserHeadful bool
 	RedisURL       string
 	BrowserURL     string
@@ -67,10 +69,16 @@ type scrobble struct {
 const (
 	customTrackDurationsFile = "track-durations.yaml"
 	browserOperationsTimeout = 30 * time.Second
+	InputDayFormat           = "02-01-2006"
 )
 
 func Run(ctx context.Context, c *Config) error {
-	err := initApp(ctx, c)
+	err := checkConfig(c)
+	if err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	err = initApp(ctx, c)
 	if err != nil {
 		return fmt.Errorf("failed to init app: %w", err)
 	}
@@ -364,9 +372,31 @@ func getStartingPage(c *Config) (int, error) {
 
 	var pageNumbers []string
 	err := chromedp.Run(timeoutCtx,
-		chromedp.Navigate("https://www.last.fm/user/"+c.LastFMUsername+"/library"),
-		chromedp.WaitVisible(`//h1[@class='header-title']/a`, chromedp.BySearch),
-		chromedp.Evaluate(`[...document.querySelectorAll('.pagination-page')].map((e) => e.innerText)`, &pageNumbers),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			if c.StartPage != 0 {
+				err := chromedp.Navigate("https://www.last.fm/user/" + c.LastFMUsername + "/library").Do(ctx)
+				if err != nil {
+					return err
+				}
+			}
+			if !c.StartDay.IsZero() && !c.EndDay.IsZero() {
+				startDayExpr, endDayExpr := c.StartDay.Format("2006-01-02"), c.EndDay.Format("2006-01-02")
+				err := chromedp.Navigate(fmt.Sprintf("https://www.last.fm/user/%s/library?from=%s&to=%s", c.LastFMUsername, startDayExpr, endDayExpr)).Do(ctx)
+				if err != nil {
+					return err
+				}
+			}
+			err := chromedp.WaitVisible(`//h1[@class='header-title']/a`, chromedp.BySearch).Do(ctx)
+			if err != nil {
+				return err
+			}
+			err = chromedp.Evaluate(`[...document.querySelectorAll('.pagination-page')].map((e) => e.innerText)`, &pageNumbers).Do(ctx)
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to retrieve total pages: %w", err)
@@ -453,4 +483,22 @@ func getScrobbles(c *Config, currentPage int) ([]scrobble, error) {
 
 	slices.Reverse(scrobbles)
 	return scrobbles, nil
+}
+
+func checkConfig(c *Config) error {
+	slog.Debug("Validating config", "config", *c)
+
+	if c.CacheType == "redis" && c.RedisURL == "" {
+		return errors.New("must set redis-url if cache-type is redis")
+	}
+
+	if c.StartPage != 0 && (!c.StartDay.IsZero() || !c.EndDay.IsZero()) {
+		return errors.New("start-page and start-day / end-day must not be set at the same time")
+	}
+
+	if !c.StartDay.IsZero() && !c.EndDay.IsZero() && c.StartDay.After(c.EndDay) {
+		return errors.New("end-day must be after start-day")
+	}
+
+	return nil
 }

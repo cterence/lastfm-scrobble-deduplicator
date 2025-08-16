@@ -6,7 +6,6 @@ import (
 	"log"
 	"log/slog"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -19,25 +18,6 @@ import (
 )
 
 func initApp(ctx context.Context, c *Config) error {
-	var slogLogLevel slog.Level
-
-	switch c.LogLevel {
-	case "debug":
-		slogLogLevel = slog.LevelDebug
-	case "info":
-		slogLogLevel = slog.LevelInfo
-	case "warn":
-		slogLogLevel = slog.LevelWarn
-	case "error":
-		slogLogLevel = slog.LevelError
-	default:
-		return fmt.Errorf("unknown log level: %s", c.LogLevel)
-	}
-	logOpts := slog.HandlerOptions{
-		Level: slogLogLevel,
-	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &logOpts)))
-
 	c.startTime = time.Now()
 
 	switch c.CacheType {

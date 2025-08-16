@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"log/slog"
 	"os"
+	"time"
 
 	"github.com/cterence/scrobble-deduplicator/internal/app"
 	altsrc "github.com/urfave/cli-altsrc/v3"
@@ -18,6 +21,8 @@ func main() {
 		lastFMUsername string
 		lastFMPassword string
 		startPage      int
+		startDay       time.Time
+		endDay         time.Time
 		browserHeadful bool
 		browserURL     string
 		redisURL       string
@@ -40,6 +45,7 @@ func main() {
 				Name:        "lastfm-username",
 				Aliases:     []string{"u"},
 				Usage:       "Last.fm username",
+				Required:    true,
 				Sources:     cli.NewValueSourceChain(cli.EnvVar("LASTFM_USERNAME"), yaml.YAML("lastfm.username", altsrc.NewStringPtrSourcer(&configFilePath))),
 				Destination: &lastFMUsername,
 			},
@@ -47,6 +53,7 @@ func main() {
 				Name:        "lastfm-password",
 				Aliases:     []string{"p"},
 				Usage:       "Last.fm password",
+				Required:    true,
 				Sources:     cli.NewValueSourceChain(cli.EnvVar("LASTFM_PASSWORD"), yaml.YAML("lastfm.password", altsrc.NewStringPtrSourcer(&configFilePath))),
 				Destination: &lastFMPassword,
 			},
@@ -63,6 +70,24 @@ func main() {
 				Usage:       "Last.fm scrobble library page to start from",
 				Sources:     cli.NewValueSourceChain(cli.EnvVar("START_PAGE"), yaml.YAML("startPage", altsrc.NewStringPtrSourcer(&configFilePath))),
 				Destination: &startPage,
+			},
+			&cli.TimestampFlag{
+				Name:  "start-day",
+				Usage: "Day at which the program should start deduplicating scrobbles (layout: 02-01-2006)",
+				Config: cli.TimestampConfig{
+					Layouts: []string{app.InputDayFormat},
+				},
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("START_DAY"), yaml.YAML("startDay", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &startDay,
+			},
+			&cli.TimestampFlag{
+				Name:  "end-day",
+				Usage: "Day at which the program should end deduplicating scrobbles (layout: 02-01-2006)",
+				Config: cli.TimestampConfig{
+					Layouts: []string{app.InputDayFormat},
+				},
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("END_DAY"), yaml.YAML("endDay", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &endDay,
 			},
 			&cli.StringFlag{
 				Name:        "cache-type",
@@ -100,12 +125,14 @@ func main() {
 		Action: func(context.Context, *cli.Command) error {
 			ctx := context.Background()
 
-			config := app.Config{
+			c := app.Config{
 				FilePath:       configFilePath,
 				CacheType:      cacheType,
 				LastFMUsername: lastFMUsername,
 				LastFMPassword: lastFMPassword,
 				StartPage:      startPage,
+				StartDay:       startDay,
+				EndDay:         endDay,
 				BrowserHeadful: browserHeadful,
 				RedisURL:       redisURL,
 				BrowserURL:     browserURL,
@@ -113,11 +140,39 @@ func main() {
 				LogLevel:       logLevel,
 			}
 
-			return app.Run(ctx, &config)
+			err := setLogger(c.LogLevel)
+			if err != nil {
+				return fmt.Errorf("failed to set logger: %w", err)
+			}
+
+			return app.Run(ctx, &c)
 		},
 	}
 
 	if err := cmd.Run(context.Background(), os.Args); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func setLogger(logLevel string) error {
+	var slogLogLevel slog.Level
+
+	switch logLevel {
+	case "debug":
+		slogLogLevel = slog.LevelDebug
+	case "info":
+		slogLogLevel = slog.LevelInfo
+	case "warn":
+		slogLogLevel = slog.LevelWarn
+	case "error":
+		slogLogLevel = slog.LevelError
+	default:
+		return fmt.Errorf("unknown log level: %s", logLevel)
+	}
+	logOpts := slog.HandlerOptions{
+		Level: slogLogLevel,
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &logOpts)))
+
+	return nil
 }
