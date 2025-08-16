@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cenkalti/backoff/v5"
 	"github.com/chromedp/chromedp"
 	"github.com/cterence/scrobble-deduplicator/internal/cache"
 	"github.com/michiwend/gomusicbrainz"
@@ -60,10 +61,17 @@ func initApp(ctx context.Context, c *Config) error {
 			DB:       redisDB,
 		})
 
-		// Test the connection
-		status := rdb.Ping(ctx)
-		if status.Err() != nil {
-			return fmt.Errorf("failed to connect to Redis: %w", status.Err())
+		var redisPingTrialCount int
+		_, err = backoff.Retry(ctx, func() (struct{}, error) {
+			err := rdb.Ping(ctx).Err()
+			if err != nil {
+				redisPingTrialCount++
+				slog.Debug("failed to connect to redis", "error", err, "trial-count", redisPingTrialCount)
+			}
+			return struct{}{}, err
+		}, backoff.WithBackOff(backoff.NewConstantBackOff(3*time.Second)), backoff.WithMaxTries(10))
+		if err != nil {
+			return fmt.Errorf("failed to connect to Redis: %w", err)
 		}
 		c.cache = cache.NewRedis(rdb)
 	case "inmemory":
@@ -99,9 +107,18 @@ func initApp(ctx context.Context, c *Config) error {
 	)
 
 	slog.Info("Starting browser")
+	browserInitTrialCount := 0
 	// ensure that the browser process is started
-	if err := chromedp.Run(taskCtx); err != nil {
-		return fmt.Errorf("failed to start ChromeDP: %w", err)
+	_, err = backoff.Retry(ctx, func() (struct{}, error) {
+		err := chromedp.Run(taskCtx)
+		if err != nil {
+			browserInitTrialCount++
+			slog.Debug("failed to start browser", "error", err, "trial-count", browserInitTrialCount)
+		}
+		return struct{}{}, err
+	}, backoff.WithBackOff(backoff.NewConstantBackOff(3*time.Second)), backoff.WithMaxTries(10))
+	if err != nil {
+		return fmt.Errorf("failed to start browser: %w", err)
 	}
 
 	c.taskCtx = taskCtx
