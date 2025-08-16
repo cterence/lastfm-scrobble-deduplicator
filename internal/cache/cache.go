@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -32,6 +33,11 @@ type File struct {
 	file *os.File
 	path string
 	data map[string]string
+
+	flushCh  chan struct{}
+	stopCh   chan struct{}
+	interval time.Duration
+	wg       sync.WaitGroup
 }
 
 var ErrCacheMiss = errors.New("cache miss")
@@ -86,16 +92,19 @@ func (c *Redis) Close() {
 
 const CacheFileName = "cache.db"
 
-func NewFile(path string) (Cache, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0666)
+func NewFile(path string, flushInterval time.Duration) (Cache, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		return nil, err
 	}
 
 	cache := &File{
-		file: f,
-		path: path,
-		data: make(map[string]string),
+		file:     f,
+		path:     path,
+		data:     make(map[string]string),
+		flushCh:  make(chan struct{}, 1),
+		stopCh:   make(chan struct{}),
+		interval: flushInterval,
 	}
 
 	if err := cache.load(); err != nil {
@@ -104,23 +113,30 @@ func NewFile(path string) (Cache, error) {
 		}
 		return nil, err
 	}
+	cache.startFlusher()
+
 	return cache, nil
 }
 
-// load reads the file into memory (simple, no partial reads)
 func (c *File) load() error {
 	c.data = make(map[string]string)
-	_, err := c.file.Seek(0, 0)
+
+	f, err := os.Open(c.path)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			slog.Error(err.Error())
+		}
+	}()
 
-	scanner := bufio.NewScanner(c.file)
+	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) == 2 {
-			c.data[parts[0]] = parts[1]
+			c.data[parts[0]] = parts[1] // last wins
 		}
 	}
 	return scanner.Err()
@@ -144,23 +160,90 @@ func (c *File) Set(ctx context.Context, key string, value string) error {
 	// update in-memory map
 	c.data[key] = value
 
-	// truncate and rewrite file
-	if err := c.file.Truncate(0); err != nil {
-		return err
-	}
-	if _, err := c.file.Seek(0, 0); err != nil {
-		return err
-	}
-	for k, v := range c.data {
-		if _, err := fmt.Fprintf(c.file, "%s=%s\n", k, v); err != nil {
-			return err
-		}
-	}
-	return c.file.Sync()
+	return nil
 }
 
 func (c *File) Close() {
+	// compact before closing to avoid unbounded growth
+	if err := c.Flush(); err != nil {
+		slog.Error("failed to flush file cache", "error", err)
+	}
 	if err := c.file.Close(); err != nil {
 		slog.Error("failed to close file cache", "error", err)
 	}
+}
+
+const FileCacheFlushTicker = 30 * time.Second
+
+// Flush compacts the append-only log by rewriting only latest values
+func (c *File) Flush() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	tmpPath := c.path + ".tmp"
+	tmpFile, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		return err
+	}
+
+	for k, v := range c.data {
+		if _, err := fmt.Fprintf(tmpFile, "%s=%s\n", k, v); err != nil {
+			errClose := tmpFile.Close()
+			if errClose != nil {
+				return errClose
+			}
+			return err
+		}
+	}
+
+	if err := tmpFile.Sync(); err != nil {
+		errClose := tmpFile.Close()
+		if errClose != nil {
+			return errClose
+		}
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+
+	// Replace old file atomically
+	if err := os.Rename(tmpPath, c.path); err != nil {
+		return err
+	}
+
+	// reopen file for future operations (not strictly needed now)
+	f, err := os.OpenFile(c.path, os.O_RDWR, 0666)
+	if err != nil {
+		return err
+	}
+	err = c.file.Close()
+	if err != nil {
+		return err
+	}
+	c.file = f
+
+	slog.Debug("Flushed data to cache file")
+
+	return nil
+}
+
+func (c *File) startFlusher() {
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		ticker := time.NewTicker(c.interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := c.Flush(); err != nil {
+					slog.Error("periodic flush failed", "error", err)
+				}
+			case <-c.stopCh:
+				return
+			}
+		}
+	}()
 }

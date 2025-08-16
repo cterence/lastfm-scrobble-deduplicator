@@ -16,6 +16,7 @@ import (
 
 	"github.com/antchfx/htmlquery"
 	"github.com/cenkalti/backoff/v5"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/chromedp"
 	"github.com/cterence/scrobble-deduplicator/internal/cache"
 	"github.com/goccy/go-yaml"
@@ -70,6 +71,7 @@ const (
 	customTrackDurationsFile = "track-durations.yaml"
 	browserOperationsTimeout = 30 * time.Second
 	InputDayFormat           = "02-01-2006"
+	LastFMQueryDayFormat     = "2006-01-02"
 )
 
 func Run(ctx context.Context, c *Config) error {
@@ -93,6 +95,9 @@ func Run(ctx context.Context, c *Config) error {
 
 	startingPage, err := getStartingPage(c)
 	if err != nil {
+		if errors.Is(err, ErrNoScrobbles) {
+			return err
+		}
 		return fmt.Errorf("failed to get starting page: %w", err)
 	}
 
@@ -128,7 +133,9 @@ func Run(ctx context.Context, c *Config) error {
 				queryHasher.Write([]byte(query))
 				queryHash := queryHasher.Sum(nil)
 
+				cacheGetStartTime := time.Now()
 				val, err := c.cache.Get(ctx, fmt.Sprintf("mbquery:%x", queryHash))
+				slog.Debug("Cache get", "took", time.Since(cacheGetStartTime))
 				if err != nil {
 					if errors.Is(err, cache.ErrCacheMiss) {
 						c.runStats.cacheMisses++
@@ -279,7 +286,9 @@ func getTrackDurationsFromMusicBrainz(ctx context.Context, c *Config, query stri
 		duration = resp.Recordings[0].Length
 	}
 
+	cacheSetStartTime := time.Now()
 	err = c.cache.Set(ctx, fmt.Sprintf("mbquery:%x", queryHash), fmt.Sprintf("%d", duration))
+	slog.Debug("Cache set", "took", time.Since(cacheSetStartTime))
 	if err != nil {
 		slog.Error("Failed to cache track duration", "error", err)
 	}
@@ -366,11 +375,17 @@ func writeUnknownTrackDurations(unknownTrackDurations map[string]map[string]stri
 	return nil
 }
 
+var ErrNoScrobbles = errors.New("no scrobbles found for the selected period")
+
 func getStartingPage(c *Config) (int, error) {
 	timeoutCtx, cancel := context.WithTimeout(c.taskCtx, browserOperationsTimeout)
 	defer cancel()
 
-	var pageNumbers []string
+	var (
+		pageNumbers   []string
+		scrobbleCount int
+	)
+	noScrobbles := false
 	err := chromedp.Run(timeoutCtx,
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			if c.StartPage != 0 {
@@ -380,19 +395,45 @@ func getStartingPage(c *Config) (int, error) {
 				}
 			}
 			if !c.StartDay.IsZero() && !c.EndDay.IsZero() {
-				startDayExpr, endDayExpr := c.StartDay.Format("2006-01-02"), c.EndDay.Format("2006-01-02")
+				startDayExpr, endDayExpr := c.StartDay.Format(LastFMQueryDayFormat), c.EndDay.Format(LastFMQueryDayFormat)
 				err := chromedp.Navigate(fmt.Sprintf("https://www.last.fm/user/%s/library?from=%s&to=%s", c.LastFMUsername, startDayExpr, endDayExpr)).Do(ctx)
 				if err != nil {
 					return err
 				}
 			}
-			err := chromedp.WaitVisible(`//h1[@class='header-title']/a`, chromedp.BySearch).Do(ctx)
+
+			err := chromedp.WaitVisible(`//h1[@class='content-top-header']`, chromedp.BySearch).Do(ctx)
 			if err != nil {
 				return err
 			}
-			err = chromedp.Evaluate(`[...document.querySelectorAll('.pagination-page')].map((e) => e.innerText)`, &pageNumbers).Do(ctx)
+
+			var nodes []*cdp.Node
+			err = chromedp.Nodes(`//p[@class='no-data-message']`, &nodes, chromedp.AtLeast(0)).Do(ctx)
 			if err != nil {
 				return err
+			}
+			// Early return if we find no scrobble
+			if len(nodes) == 1 {
+				noScrobbles = true
+				return nil
+			}
+
+			var scrobbleCountStr string
+			err = chromedp.Text(`//h2[@class='metadata-title' and text()='Scrobbles']/../p`, &scrobbleCountStr, chromedp.BySearch).Do(ctx)
+			if err != nil {
+				return err
+			}
+
+			scrobbleCount, err = strconv.Atoi(scrobbleCountStr)
+			if err != nil {
+				return err
+			}
+
+			if scrobbleCount > 50 {
+				err = chromedp.Evaluate(`[...document.querySelectorAll('.pagination-page')].map((e) => e.innerText)`, &pageNumbers).Do(ctx)
+				if err != nil {
+					return err
+				}
 			}
 
 			return nil
@@ -401,7 +442,14 @@ func getStartingPage(c *Config) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to retrieve total pages: %w", err)
 	}
+	if noScrobbles {
+		return 0, ErrNoScrobbles
+	}
 	if len(pageNumbers) == 0 {
+		// There is only one page with less than 50 scrobbles
+		if scrobbleCount > 0 {
+			return 1, nil
+		}
 		return 0, errors.New("no pagination found on the page")
 	}
 	totalPages, err := strconv.Atoi(strings.TrimSpace(strings.Split(pageNumbers[len(pageNumbers)-1], " ")[0]))
@@ -449,8 +497,15 @@ func getScrobbles(c *Config, currentPage int) ([]scrobble, error) {
 	timeoutCtx, timeoutCancel := context.WithTimeout(c.taskCtx, browserOperationsTimeout)
 	defer timeoutCancel()
 
+	libraryPageQuery := fmt.Sprintf("https://www.last.fm/user/%s/library?page=%s", c.LastFMUsername, strconv.Itoa(currentPage))
+	if !c.StartDay.IsZero() && !c.EndDay.IsZero() {
+		libraryPageQuery += fmt.Sprintf("&from=%s&to=%s", c.StartDay.Format(LastFMQueryDayFormat), c.EndDay.Format(LastFMQueryDayFormat))
+	}
+
+	slog.Debug("get scrobble library page", "query", libraryPageQuery)
+
 	err := chromedp.Run(timeoutCtx,
-		chromedp.Navigate("https://www.last.fm/user/"+c.LastFMUsername+"/library?page="+strconv.Itoa(currentPage)),
+		chromedp.Navigate(libraryPageQuery),
 		chromedp.WaitVisible(`.top-bar`, chromedp.ByQuery),
 		// Remove the top bar to avoid clicking on it by accident when deleting scrobbles
 		chromedp.Evaluate("let node1 = document.querySelector('.top-bar'); node1.parentNode.removeChild(node1)", nil),
@@ -486,7 +541,7 @@ func getScrobbles(c *Config, currentPage int) ([]scrobble, error) {
 }
 
 func checkConfig(c *Config) error {
-	slog.Debug("Validating config", "config", *c)
+	slog.Debug("Validating config")
 
 	if c.CacheType == "redis" && c.RedisURL == "" {
 		return errors.New("must set redis-url if cache-type is redis")

@@ -56,7 +56,7 @@ func initApp(ctx context.Context, c *Config) error {
 		c.cache = cache.NewRedis(rdb)
 	case "file":
 		slog.Info("Using file cache")
-		fileCache, err := cache.NewFile(cache.CacheFileName)
+		fileCache, err := cache.NewFile(cache.CacheFileName, cache.FileCacheFlushTicker)
 		if err != nil {
 			return fmt.Errorf("failed to create file cache: %w", err)
 		}
