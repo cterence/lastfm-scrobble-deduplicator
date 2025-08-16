@@ -74,6 +74,13 @@ func initApp(ctx context.Context, c *Config) error {
 			return fmt.Errorf("failed to connect to Redis: %w", err)
 		}
 		c.cache = cache.NewRedis(rdb)
+	case "file":
+		slog.Info("Using file cache")
+		fileCache, err := cache.NewFile(cache.CacheFileName)
+		if err != nil {
+			return fmt.Errorf("failed to create file cache: %w", err)
+		}
+		c.cache = fileCache
 	case "inmemory":
 		slog.Info("Using in-memory cache")
 		c.cache = cache.NewInMemory()

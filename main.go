@@ -66,7 +66,7 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:        "cache-type",
-				Usage:       "Cache type (inmemory, redis) (must specify redis-url flag for redis)",
+				Usage:       "Cache type for MusicBrainz API queries (inmemory, file, redis) (must specify redis-url flag for redis)",
 				Value:       "inmemory",
 				Sources:     cli.NewValueSourceChain(cli.EnvVar("CACHE_TYPE"), yaml.YAML("cacheType", altsrc.NewStringPtrSourcer(&configFilePath))),
 				Destination: &cacheType,

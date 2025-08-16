@@ -39,3 +39,4 @@ tmp/
 track-durations.yaml
 .pre-commit-config.yaml
 .direnv
+cache.db

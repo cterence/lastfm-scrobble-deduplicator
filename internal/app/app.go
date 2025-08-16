@@ -76,6 +76,7 @@ func Run(ctx context.Context, c *Config) error {
 	}
 	defer c.allocCancel()
 	defer c.taskCancel()
+	defer c.cache.Close()
 
 	err = login(c.taskCtx, c)
 	if err != nil {
