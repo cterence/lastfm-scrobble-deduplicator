@@ -67,6 +67,8 @@ type scrobble struct {
 	duration        time.Duration
 }
 
+type durationByTrackByArtist map[string]map[string]string
+
 const (
 	customTrackDurationsFile = "track-durations.yaml"
 	browserOperationsTimeout = 30 * time.Second
@@ -105,7 +107,7 @@ func Run(ctx context.Context, c *Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to get user track durations: %w", err)
 	}
-	unknownTrackDurations := make(map[string]map[string]string, 0)
+	unknownTrackDurations := make(durationByTrackByArtist, 0)
 
 	var previousScrobble *scrobble
 	var lastScrobbleDeleted bool
@@ -118,63 +120,13 @@ func Run(ctx context.Context, c *Config) error {
 		}
 
 		for _, s := range scrobbles {
-			if userTrackDurations != nil && userTrackDurations[s.artist] != nil && userTrackDurations[s.artist][s.track] != "" {
-				// Convert to duration with 4m0s format
-				trackDuration, err := time.ParseDuration(userTrackDurations[s.artist][s.track])
-				if err != nil {
-					slog.Error("Failed to parse user duration", "artist", s.artist, "track", s.track, "error", err)
-				}
-				s.duration = trackDuration
-				slog.Debug("Found track duration in user track durations", "artist", s.artist, "track", s.track, "duration", s.duration)
-			} else {
-				query := fmt.Sprintf(`artist:"%s" AND recording:"%s"`, s.artist, s.track)
-				// Hash the query
-				queryHasher := sha256.New()
-				queryHasher.Write([]byte(query))
-				queryHash := queryHasher.Sum(nil)
-
-				cacheGetStartTime := time.Now()
-				val, err := c.cache.Get(ctx, fmt.Sprintf("mbquery:%x", queryHash))
-				slog.Debug("Cache get", "took", time.Since(cacheGetStartTime))
-				if err != nil {
-					if errors.Is(err, cache.ErrCacheMiss) {
-						c.runStats.cacheMisses++
-						slog.Debug("Cache miss for track duration query", "artist", s.artist, "track", s.track, "duration", s.duration)
-						trackDurations, err := backoff.Retry(ctx, func() (time.Duration, error) {
-							return getTrackDurationsFromMusicBrainz(ctx, c, query, queryHash)
-						}, backoff.WithBackOff(backoff.NewExponentialBackOff()), backoff.WithMaxTries(10))
-						if err != nil {
-							slog.Error("failed to get track duration from MusicBrainz API", "error", err)
-							continue
-						}
-						s.duration = trackDurations
-						slog.Debug("Found track duration from MusicBrainz API", "artist", s.artist, "track", s.track, "duration", s.duration)
-					} else {
-						slog.Error("Failed to get cached track duration", "query", query, "error", err)
-						continue
-					}
-				} else {
-					c.runStats.cacheHits++
-					cachedTrackDurations, err := strconv.Atoi(val)
-					if err != nil {
-						slog.Error("Failed to parse cached duration", "query", query, "error", err)
-						continue
-					}
-					s.duration = time.Duration(cachedTrackDurations) * time.Millisecond
-					slog.Debug("Cache hit for track duration query", "artist", s.artist, "track", s.track, "duration", s.duration)
-				}
-				if s.duration < 0 {
-					if unknownTrackDurations[s.artist] == nil {
-						unknownTrackDurations[s.artist] = make(map[string]string)
-					}
-					if _, found := unknownTrackDurations[s.artist][s.track]; !found {
-						unknownTrackDurations[s.artist][s.track] = ""
-						c.runStats.unknownTrackDurationsCount++
-						slog.Warn("No track duration found for query, saved to unknown track durations", "query", query, "artist", s.artist, "track", s.track)
-					}
-					continue
-				}
+			// Check if the track is in the user specified track durations file
+			err := getTrackDuration(ctx, c, userTrackDurations, unknownTrackDurations, &s)
+			if err != nil {
+				slog.Warn("failed to get track duration, skipping scrobble", "error", err)
+				continue
 			}
+			slog.Debug("Track duration found", "artist", s.artist, "track", s.track, "duration", s.duration)
 
 			lastScrobbleDeleted = false
 			if previousScrobble != nil {
@@ -204,7 +156,7 @@ func Run(ctx context.Context, c *Config) error {
 		}
 	}
 
-	slog.Info("Completed!")
+	slog.Info("Processing complete!")
 
 	c.runStats.elapsedTime = time.Since(c.startTime)
 	logStats(c)
@@ -212,6 +164,69 @@ func Run(ctx context.Context, c *Config) error {
 	err = writeUnknownTrackDurations(unknownTrackDurations)
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func getTrackDuration(ctx context.Context, c *Config, userTrackDurations durationByTrackByArtist, unknownTrackDurations durationByTrackByArtist, s *scrobble) error {
+	// Check if track is in userTrackDurations
+	if userTrackDurations != nil && userTrackDurations[s.artist] != nil && userTrackDurations[s.artist][s.track] != "" {
+		// Convert to duration with 4m0s format
+		trackDuration, err := time.ParseDuration(userTrackDurations[s.artist][s.track])
+		if err != nil {
+			slog.Error("Failed to parse user duration", "artist", s.artist, "track", s.track, "error", err)
+		}
+		s.duration = trackDuration
+		slog.Debug("Found track duration in user track durations", "artist", s.artist, "track", s.track, "duration", s.duration)
+
+		return nil
+	}
+
+	query := fmt.Sprintf(`artist:"%s" AND recording:"%s"`, s.artist, s.track)
+	// Hash the query
+	queryHasher := sha256.New()
+	queryHasher.Write([]byte(query))
+	queryHash := queryHasher.Sum(nil)
+
+	cacheGetStartTime := time.Now()
+	val, err := c.cache.Get(ctx, fmt.Sprintf("mbquery:%x", queryHash))
+	slog.Debug("Cache get", "took", time.Since(cacheGetStartTime))
+
+	if err != nil {
+		if errors.Is(err, cache.ErrCacheMiss) {
+			c.runStats.cacheMisses++
+			slog.Debug("Cache miss for track duration query", "artist", s.artist, "track", s.track, "duration", s.duration)
+			trackDurations, err := backoff.Retry(ctx, func() (time.Duration, error) {
+				return getTrackDurationsFromMusicBrainz(ctx, c, query, queryHash)
+			}, backoff.WithBackOff(backoff.NewExponentialBackOff()), backoff.WithMaxTries(10))
+			if err != nil {
+				return fmt.Errorf("failed to get track duration from MusicBrainz API: %w", err)
+			}
+			s.duration = trackDurations
+			slog.Debug("Found track duration from MusicBrainz API", "artist", s.artist, "track", s.track, "duration", s.duration)
+			return nil
+		}
+		return fmt.Errorf("failed to get cached track duration: %w", err)
+	}
+
+	c.runStats.cacheHits++
+	cachedTrackDurations, err := strconv.Atoi(val)
+	if err != nil {
+		return fmt.Errorf("failed to parse cached duration: %w", err)
+	}
+	s.duration = time.Duration(cachedTrackDurations) * time.Millisecond
+	slog.Debug("Cache hit for track duration query", "artist", s.artist, "track", s.track, "duration", s.duration)
+
+	if s.duration < 0 {
+		if unknownTrackDurations[s.artist] == nil {
+			unknownTrackDurations[s.artist] = make(map[string]string)
+		}
+		if _, found := unknownTrackDurations[s.artist][s.track]; !found {
+			unknownTrackDurations[s.artist][s.track] = ""
+			c.runStats.unknownTrackDurationsCount++
+		}
+		return fmt.Errorf("no duration found in cache or MusicBrainz API for track %s - %s, saving to unknown track durations", s.artist, s.track)
 	}
 
 	return nil
@@ -329,6 +344,7 @@ func deleteScrobble(c *Config, timestamp string, delete bool) error {
 }
 
 func logStats(c *Config) {
+	slog.Info("Run statistics:")
 	slog.Info(fmt.Sprintf("MusicBrainz API cache hits: %d", c.runStats.cacheHits))
 	slog.Info(fmt.Sprintf("MusicBrainz API cache misses: %d", c.runStats.cacheMisses))
 	slog.Info(fmt.Sprintf("Scrobbles processed: %d", c.runStats.processedScrobbles))
@@ -336,13 +352,15 @@ func logStats(c *Config) {
 	slog.Info(fmt.Sprintf("Unknown duration track count: %d", c.runStats.unknownTrackDurationsCount))
 	slog.Info(fmt.Sprintf("Elapsed time: %s", c.runStats.elapsedTime.Truncate(time.Millisecond/10)))
 
-	slog.Info("Deleted scrobbles:")
-	for _, s := range c.runStats.deletedScrobbles {
-		fmt.Printf("Artist: %s - Track: %s - Scrobble time: %s\n", s.artist, s.track, s.timestamp)
+	if len(c.runStats.deletedScrobbles) > 0 {
+		slog.Info("Deleted scrobbles:")
+		for _, s := range c.runStats.deletedScrobbles {
+			fmt.Printf("Artist: %s - Track: %s - Scrobble time: %s\n", s.artist, s.track, s.timestamp)
+		}
 	}
 }
 
-func writeUnknownTrackDurations(unknownTrackDurations map[string]map[string]string) error {
+func writeUnknownTrackDurations(unknownTrackDurations durationByTrackByArtist) error {
 	userTrackDurations, err := getUserTrackDurations()
 	if err != nil {
 		return err
@@ -473,7 +491,7 @@ func getStartingPage(c *Config) (int, error) {
 	return startingPage, nil
 }
 
-func getUserTrackDurations() (map[string]map[string]string, error) {
+func getUserTrackDurations() (durationByTrackByArtist, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current working directory: %w", err)
@@ -483,7 +501,7 @@ func getUserTrackDurations() (map[string]map[string]string, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	var userTrackDurations map[string]map[string]string
+	var userTrackDurations durationByTrackByArtist
 	if len(customTrackDurationsBytes) > 0 {
 		err = yaml.Unmarshal(customTrackDurationsBytes, &userTrackDurations)
 		if err != nil {
