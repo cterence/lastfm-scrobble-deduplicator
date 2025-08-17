@@ -111,9 +111,14 @@ func getStartPage(c *Config) (int, error) {
 				}
 			}
 
-			if !c.From.IsZero() && !c.To.IsZero() {
-				fromExpr, toExpr := c.From.Format(LastFMQueryDayFormat), c.To.Format(LastFMQueryDayFormat)
-				err := chromedp.Navigate(fmt.Sprintf("https://www.last.fm/user/%s/library?from=%s&to=%s", c.LastFMUsername, fromExpr, toExpr)).Do(ctx)
+			if !c.From.IsZero() {
+				fromExpr := c.From.Format(LastFMQueryDayFormat)
+				query := fmt.Sprintf("https://www.last.fm/user/%s/library?from=%s", c.LastFMUsername, fromExpr)
+				if !c.To.IsZero() {
+					toExpr := c.To.Format(LastFMQueryDayFormat)
+					query += fmt.Sprintf("&to=%s", toExpr)
+				}
+				err := chromedp.Navigate(query).Do(ctx)
 				if err != nil {
 					return fmt.Errorf("failed to navigate to user library with from / to dates: %w", err)
 				}
