@@ -16,6 +16,7 @@ import (
 )
 
 type Cache interface {
+	// TODO: cache delete
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key string, value string) error
 	Close()

@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-
-	"github.com/cenkalti/backoff/v5"
 )
 
 func Run(ctx context.Context, c *Config) error {
@@ -25,8 +23,6 @@ func Run(ctx context.Context, c *Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to init app: %w", err)
 	}
-	defer c.close()
-
 	c.handleInterrupts()
 
 	err = login(c.taskCtx, c)
@@ -34,7 +30,7 @@ func Run(ctx context.Context, c *Config) error {
 		return fmt.Errorf("failed to login to Last.fm: %w", err)
 	}
 
-	startingPage, err := getStartingPage(c)
+	startPage, err := getStartPage(c)
 	if err != nil {
 		if errors.Is(err, ErrNoScrobbles) {
 			return err
@@ -48,43 +44,14 @@ func Run(ctx context.Context, c *Config) error {
 	}
 	c.unknownTrackDurations = make(durationByTrackByArtist, 0)
 
-	var previousScrobble *scrobble
-
-	for currentPage := startingPage; currentPage > 0; currentPage-- {
-		slog.Info("Processing page", "page", currentPage)
-		scrobbles, err := backoff.Retry(ctx, func() ([]scrobble, error) {
-			return getScrobbles(c, currentPage)
-		}, backoff.WithMaxTries(3))
-		if err != nil {
-			return err
+	switch c.ProcessingMode {
+	case "sequential":
+		endPage := 1
+		if err := processScrobblesFromStartToEndPage(c.taskCtx, c, startPage, endPage, userTrackDurations); err != nil {
+			return fmt.Errorf("error when processing scrobbles: %w", err)
 		}
-
-		for _, s := range scrobbles {
-			// Check if the track is in the user specified track durations file
-			err := getTrackDuration(ctx, c, userTrackDurations, &s)
-			if err != nil {
-				if !errors.Is(err, ErrUnknownTrackAlreadyInMap) {
-					slog.Warn("failed to get track duration, skipping scrobble", "error", err)
-				}
-				c.runStats.skippedScrobbleUnknownDuration++
-				continue
-			}
-			slog.Debug("Track duration found", "artist", s.artist, "track", s.track, "duration", s.duration)
-
-			lastScrobbleDeleted := false
-			if previousScrobble != nil {
-				// Check if the current scrobble is a duplicate of the previous one
-				lastScrobbleDeleted, err = detectAndDeleteDuplicateScrobble(ctx, c, previousScrobble, s)
-				if err != nil {
-					c.runStats.scrobbleDeleteFails++
-					slog.Warn("failed to detect and delete duplicated scrobble", "error", err)
-				}
-			}
-			if !lastScrobbleDeleted || previousScrobble == nil {
-				previousScrobble = &s
-			}
-			c.runStats.processedScrobbles++
-		}
+	default:
+		return fmt.Errorf("unknown processing mode: %s", c.ProcessingMode)
 	}
 
 	slog.Info("Processing complete!")

@@ -28,6 +28,7 @@ type Config struct {
 	BrowserURL         string
 	LogLevel           string
 	DuplicateThreshold int
+	ProcessingMode     string
 
 	// Internal dependencies
 	startTime time.Time

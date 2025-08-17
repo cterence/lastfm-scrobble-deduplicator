@@ -88,7 +88,7 @@ func clickConsentBanner(ctx context.Context) error {
 	return nil
 }
 
-func getStartingPage(c *Config) (int, error) {
+func getStartPage(c *Config) (int, error) {
 	timeoutCtx, cancel := context.WithTimeout(c.taskCtx, browserOperationsTimeout)
 	defer cancel()
 
@@ -179,18 +179,18 @@ func getStartingPage(c *Config) (int, error) {
 
 	slog.Info("Total pages found", "pages", totalPages)
 
-	startingPage := totalPages
+	startPage := totalPages
 	if c.StartPage != 0 {
 		if c.StartPage > totalPages {
 			return 0, fmt.Errorf("start page %d exceeds total pages %d", c.StartPage, totalPages)
 		}
 		slog.Info("Starting from page", "page", c.StartPage)
-		startingPage = c.StartPage
+		startPage = c.StartPage
 	}
 
-	slog.Info("Starting on page", "currentPage", startingPage)
+	slog.Info("Starting on page", "currentPage", startPage)
 
-	return startingPage, nil
+	return startPage, nil
 }
 
 func getUserTrackDurations() (durationByTrackByArtist, error) {
@@ -347,6 +347,7 @@ func getTrackDuration(ctx context.Context, c *Config, userTrackDurations duratio
 			if err != nil {
 				return fmt.Errorf("failed to get track duration from MusicBrainz API: %w", err)
 			}
+			// TODO: check if track duration is 0s, and go directly to unknown tracks (create a function for that)
 			s.duration = trackDurations
 			slog.Debug("Found track duration from MusicBrainz API", "artist", s.artist, "track", s.track, "duration", s.duration)
 			return nil
@@ -359,6 +360,7 @@ func getTrackDuration(ctx context.Context, c *Config, userTrackDurations duratio
 	if err != nil {
 		return fmt.Errorf("failed to parse cached duration: %w", err)
 	}
+	// TODO: check if track duration is 0s, delete it from cache, and go directly to unknown tracks (create a function for that)
 	s.duration = time.Duration(cachedTrackDurations) * time.Millisecond
 	slog.Debug("Cache hit for track duration query", "artist", s.artist, "track", s.track, "duration", s.duration)
 
@@ -407,7 +409,55 @@ func getTrackDurationsFromMusicBrainz(ctx context.Context, c *Config, query stri
 	return time.Duration(duration) * time.Millisecond, nil
 }
 
+func processScrobblesFromStartToEndPage(ctx context.Context, c *Config, startPage int, endPage int, userTrackDurations durationByTrackByArtist) error {
+
+	for currentPage := startPage; currentPage >= endPage; currentPage-- {
+		slog.Info("Processing page", "page", currentPage)
+		scrobbles, err := backoff.Retry(ctx, func() ([]scrobble, error) {
+			return getScrobbles(c, currentPage)
+		}, backoff.WithMaxTries(3))
+		if err != nil {
+			return err
+		}
+
+		var previousScrobble *scrobble
+		for _, s := range scrobbles {
+			previousScrobble = processPreviousAndCurrentScrobbles(ctx, c, s, previousScrobble, userTrackDurations)
+		}
+	}
+	return nil
+}
+
+func processPreviousAndCurrentScrobbles(ctx context.Context, c *Config, s scrobble, previousScrobble *scrobble, userTrackDurations durationByTrackByArtist) *scrobble {
+	err := getTrackDuration(ctx, c, userTrackDurations, &s)
+	if err != nil {
+		if !errors.Is(err, ErrUnknownTrackAlreadyInMap) {
+			slog.Warn("failed to get track duration, skipping scrobble", "error", err)
+		}
+		c.runStats.skippedScrobbleUnknownDuration++
+		return previousScrobble
+	}
+	slog.Debug("Track duration found", "artist", s.artist, "track", s.track, "duration", s.duration)
+
+	lastScrobbleDeleted := false
+	if previousScrobble != nil {
+		// Check if the current scrobble is a duplicate of the previous one
+		lastScrobbleDeleted, err = detectAndDeleteDuplicateScrobble(ctx, c, previousScrobble, s)
+		if err != nil {
+			c.runStats.scrobbleDeleteFails++
+			slog.Warn("failed to detect and delete duplicated scrobble", "error", err)
+		}
+	}
+	if !lastScrobbleDeleted || previousScrobble == nil {
+		previousScrobble = &s
+	}
+	c.runStats.processedScrobbles++
+
+	return previousScrobble
+}
+
 func detectAndDeleteDuplicateScrobble(ctx context.Context, c *Config, previousScrobble *scrobble, currentScrobble scrobble) (bool, error) {
+	// TODO: detect if 2 scrobbles are too close apart meaning that the first one was scrobbled too quickly
 	lastScrobbleDeleted := false
 	if currentScrobble.artist == previousScrobble.artist && currentScrobble.track == previousScrobble.track && currentScrobble.timestamp != previousScrobble.timestamp {
 		timeBetweenScrobbleStarts := currentScrobble.timestamp.Sub(previousScrobble.timestamp)
@@ -515,9 +565,13 @@ func writeUnknownTrackDurations(unknownTrackDurations durationByTrackByArtist) e
 	return nil
 }
 
-func exportScrobblesToCSV(baseFilename string, startTime time.Time, scrobbles []scrobble) {
+func exportScrobblesToCSV(baseFilename string, startTime time.Time, delete bool, scrobbles []scrobble) {
 	timestamp := startTime.Format("20060102-150405")
 	filename := fmt.Sprintf("%s-%s.csv", baseFilename, timestamp)
+
+	slices.SortFunc(scrobbles, func(s1, s2 scrobble) int {
+		return s1.timestamp.Compare(s2.timestamp)
+	})
 
 	file, err := os.Create(filename)
 	if err != nil {
@@ -541,6 +595,12 @@ func exportScrobblesToCSV(baseFilename string, startTime time.Time, scrobbles []
 			s.timestampString,
 		}
 		_ = writer.Write(record)
+	}
+
+	if delete {
+		slog.Info("Deleted scrobbles saved to file", "filename", filename)
+	} else {
+		slog.Info("Would-be deleted scrobbles saved to file", "filename", filename)
 	}
 }
 
@@ -574,7 +634,7 @@ func finishRun(c *Config) error {
 	}
 
 	if len(c.deletedScrobbles) > 0 {
-		exportScrobblesToCSV("deleted-scrobbles", c.startTime, c.deletedScrobbles)
+		exportScrobblesToCSV("deleted-scrobbles", c.startTime, c.Delete, c.deletedScrobbles)
 	}
 
 	return nil

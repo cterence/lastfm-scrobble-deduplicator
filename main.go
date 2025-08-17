@@ -51,6 +51,7 @@ func main() {
 		delete             bool
 		logLevel           string
 		duplicateThreshold int
+		processingMode     string
 	)
 
 	cmd := &cli.Command{
@@ -120,6 +121,13 @@ func main() {
 				Destination: &to,
 			},
 			&cli.StringFlag{
+				Name:        "processing-mode",
+				Usage:       "Mode for processing the scrobbles (sequential, parallel)",
+				Value:       "sequential",
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("PROCESSING_MODE"), yaml.YAML("processingMode", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &processingMode,
+			},
+			&cli.StringFlag{
 				Name:        "cache-type",
 				Usage:       "Cache type for MusicBrainz API queries (inmemory, file, redis) (must specify redis-url flag for redis)",
 				Value:       "inmemory",
@@ -169,6 +177,7 @@ func main() {
 				Delete:             delete,
 				LogLevel:           logLevel,
 				DuplicateThreshold: duplicateThreshold,
+				ProcessingMode:     processingMode,
 			}
 
 			err := setLogger(c.LogLevel)
