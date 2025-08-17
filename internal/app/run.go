@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 )
 
 func Run(ctx context.Context, c *Config) error {
@@ -45,7 +44,7 @@ func Run(ctx context.Context, c *Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to get user track durations: %w", err)
 	}
-	unknownTrackDurations := make(durationByTrackByArtist, 0)
+	c.unknownTrackDurations = make(durationByTrackByArtist, 0)
 
 	var previousScrobble *scrobble
 
@@ -58,7 +57,7 @@ func Run(ctx context.Context, c *Config) error {
 
 		for _, s := range scrobbles {
 			// Check if the track is in the user specified track durations file
-			err := getTrackDuration(ctx, c, userTrackDurations, unknownTrackDurations, &s)
+			err := getTrackDuration(ctx, c, userTrackDurations, &s)
 			if err != nil {
 				slog.Warn("failed to get track duration, skipping scrobble", "error", err)
 				c.runStats.skippedScrobbleUnknownDuration++
@@ -84,14 +83,8 @@ func Run(ctx context.Context, c *Config) error {
 
 	slog.Info("Processing complete!")
 
-	c.runStats.elapsedTime = time.Since(c.startTime)
-	logStats(c)
-
-	if len(unknownTrackDurations) > 0 {
-		err = writeUnknownTrackDurations(unknownTrackDurations)
-		if err != nil {
-			return err
-		}
+	if err := finishRun(c); err != nil {
+		return fmt.Errorf("failed to finish run: %w", err)
 	}
 
 	slog.Info("Exiting")

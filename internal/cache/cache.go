@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cterence/scrobble-deduplicator/internal/helpers"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -125,11 +126,7 @@ func (c *File) load() error {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			slog.Error(err.Error())
-		}
-	}()
+	defer helpers.CloseFile(f)
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {

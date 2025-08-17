@@ -36,6 +36,9 @@ type Config struct {
 	mb        *gomusicbrainz.WS2Client
 	taskCtx   context.Context
 
+	noLogin               bool
+	unknownTrackDurations durationByTrackByArtist
+
 	// Closing functions
 	allocCancel context.CancelFunc
 	taskCancel  context.CancelFunc
@@ -82,7 +85,9 @@ func (c *Config) handleInterrupts() {
 	go func() {
 		<-sigInterrupt
 		slog.Warn("Closing due to interrupt")
-		c.close()
+		if err := finishRun(c); err != nil {
+			slog.Error("Failed to finish run", "error", err)
+		}
 
 		os.Exit(1)
 	}()

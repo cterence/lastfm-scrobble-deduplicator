@@ -17,6 +17,7 @@ import (
 	"github.com/antchfx/htmlquery"
 	"github.com/cenkalti/backoff/v5"
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 	"github.com/cterence/scrobble-deduplicator/internal/cache"
 	"github.com/goccy/go-yaml"
@@ -39,6 +40,52 @@ const (
 	LastFMQueryDayFormat     = "2006-01-02"
 )
 
+func clickConsentBanner(ctx context.Context) error {
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer timeoutCancel()
+
+	cookies, err := getCookies(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get cookies: %w", err)
+	}
+	slog.Debug("Got cookies", "cookieCount", len(cookies))
+
+	consentBoxCookieIndex := slices.IndexFunc(cookies, func(cookie *network.Cookie) bool {
+		return cookie.Name == "OptanonAlertBoxClosed"
+	})
+
+	cookieExpired := false
+	if consentBoxCookieIndex != -1 {
+		slog.Debug("Consent cookie found")
+		consentBoxCookie := cookies[consentBoxCookieIndex]
+		cookieExpiry := cdp.TimeSinceEpoch(time.Unix(int64(consentBoxCookie.Expires), 0))
+		if cookieExpiry.Time().Before(time.Now()) {
+			slog.Info("Consent cookie expired, clicking on banner")
+			cookieExpired = true
+		}
+	}
+
+	if consentBoxCookieIndex == -1 || cookieExpired {
+		err = chromedp.Run(timeoutCtx,
+			chromedp.WaitVisible(`#onetrust-reject-all-handler`, chromedp.ByID),
+			chromedp.Sleep(1*time.Second), // Cookie banner takes a while to come up, we don't want to miss the click
+			chromedp.Click(`#onetrust-reject-all-handler`, chromedp.ByID),
+			chromedp.Sleep(500*time.Millisecond), // Wait for cookie banner to disappear
+		)
+		if err != nil {
+			if strings.Contains(err.Error(), "context deadline exceeded") {
+				slog.Warn("Failed to click on cookie banner, ignoring")
+				return nil
+			}
+			return err
+		}
+		slog.Debug("Clicked on cookie banner")
+	} else {
+		slog.Debug("Skipped clicking on cookie banner")
+	}
+	return nil
+}
+
 func getStartingPage(c *Config) (int, error) {
 	timeoutCtx, cancel := context.WithTimeout(c.taskCtx, browserOperationsTimeout)
 	defer cancel()
@@ -53,6 +100,13 @@ func getStartingPage(c *Config) (int, error) {
 			err := chromedp.Navigate("https://www.last.fm/user/" + c.LastFMUsername + "/library").Do(ctx)
 			if err != nil {
 				return fmt.Errorf("failed to navigate to user library: %w", err)
+			}
+
+			if c.noLogin {
+				err := clickConsentBanner(ctx)
+				if err != nil {
+					return fmt.Errorf("failed to click on consent banner: %w", err)
+				}
 			}
 
 			if !c.From.IsZero() && !c.To.IsZero() {
@@ -255,7 +309,7 @@ func generateScrobble(row string) (scrobble, error) {
 	}, nil
 }
 
-func getTrackDuration(ctx context.Context, c *Config, userTrackDurations durationByTrackByArtist, unknownTrackDurations durationByTrackByArtist, s *scrobble) error {
+func getTrackDuration(ctx context.Context, c *Config, userTrackDurations durationByTrackByArtist, s *scrobble) error {
 	// Check if track is in userTrackDurations
 	if userTrackDurations != nil && userTrackDurations[s.artist] != nil && userTrackDurations[s.artist][s.track] != "" {
 		// Convert to duration with 4m0s format
@@ -305,11 +359,11 @@ func getTrackDuration(ctx context.Context, c *Config, userTrackDurations duratio
 	slog.Debug("Cache hit for track duration query", "artist", s.artist, "track", s.track, "duration", s.duration)
 
 	if s.duration < 0 {
-		if unknownTrackDurations[s.artist] == nil {
-			unknownTrackDurations[s.artist] = make(map[string]string)
+		if c.unknownTrackDurations[s.artist] == nil {
+			c.unknownTrackDurations[s.artist] = make(map[string]string)
 		}
-		if _, found := unknownTrackDurations[s.artist][s.track]; !found {
-			unknownTrackDurations[s.artist][s.track] = ""
+		if _, found := c.unknownTrackDurations[s.artist][s.track]; !found {
+			c.unknownTrackDurations[s.artist][s.track] = ""
 			c.runStats.unknownTrackDurationsCount++
 		}
 		return fmt.Errorf("no duration found in cache or MusicBrainz API for track %s - %s, saving to unknown track durations", s.artist, s.track)
@@ -360,7 +414,7 @@ func detectAndDeleteDuplicateScrobble(ctx context.Context, c *Config, previousSc
 			c.runStats.deletedScrobbles = append(c.runStats.deletedScrobbles, currentScrobble)
 			_, err := backoff.Retry(ctx, func() (struct{}, error) {
 				return struct{}{}, deleteScrobble(c, currentScrobble.timestampString, c.Delete)
-			}, backoff.WithMaxTries(5))
+			}, backoff.WithMaxTries(2))
 			if err != nil {
 				return false, fmt.Errorf("failed to delete duplicate scrobble: %w", err)
 			}
@@ -374,12 +428,14 @@ func detectAndDeleteDuplicateScrobble(ctx context.Context, c *Config, previousSc
 }
 
 func deleteScrobble(c *Config, timestamp string, delete bool) error {
-	timeoutCtx, cancel := context.WithTimeout(c.taskCtx, browserOperationsTimeout)
+	timeoutCtx, cancel := context.WithTimeout(c.taskCtx, 3*time.Second)
 	defer cancel()
 
-	xpathPrefix := `//input[@value='` + timestamp + `']`
+	// Sometimes multiple scrobble have an identical timestamp
+	// We always take the last scrobble because it would be the one next to the previous scrobble
+	xpathPrefix := `(//input[@value='` + timestamp + `'])[last()]`
 
-	slog.Debug("Attempting to delete scrobble", "timestamp", timestamp)
+	slog.Debug("Attempting to delete scrobble", "timestamp", timestamp, "xpath", xpathPrefix)
 	err := chromedp.Run(timeoutCtx,
 		// Click away to close any previous popup
 		chromedp.MouseClickXY(0, 0),
@@ -407,6 +463,8 @@ func deleteScrobble(c *Config, timestamp string, delete bool) error {
 }
 
 func logStats(c *Config) {
+	c.runStats.elapsedTime = time.Since(c.startTime)
+
 	slog.Info("Run statistics:")
 	slog.Info(fmt.Sprintf("MusicBrainz API cache hits: %d", c.runStats.cacheHits))
 	slog.Info(fmt.Sprintf("MusicBrainz API cache misses: %d", c.runStats.cacheMisses))
@@ -455,5 +513,19 @@ func writeUnknownTrackDurations(unknownTrackDurations durationByTrackByArtist) e
 		}
 		return fmt.Errorf("failed to save unknown track durations file: %w", err)
 	}
+	return nil
+}
+
+func finishRun(c *Config) error {
+	defer c.close()
+	logStats(c)
+
+	if len(c.unknownTrackDurations) > 0 {
+		err := writeUnknownTrackDurations(c.unknownTrackDurations)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
