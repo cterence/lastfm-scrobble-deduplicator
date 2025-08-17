@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+
+	"github.com/cenkalti/backoff/v5"
 )
 
 func Run(ctx context.Context, c *Config) error {
@@ -50,7 +52,9 @@ func Run(ctx context.Context, c *Config) error {
 
 	for currentPage := startingPage; currentPage > 0; currentPage-- {
 		slog.Info("Processing page", "page", currentPage)
-		scrobbles, err := getScrobbles(c, currentPage)
+		scrobbles, err := backoff.Retry(ctx, func() ([]scrobble, error) {
+			return getScrobbles(c, currentPage)
+		}, backoff.WithMaxTries(3))
 		if err != nil {
 			return err
 		}
