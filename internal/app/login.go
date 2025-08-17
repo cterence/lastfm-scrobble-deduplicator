@@ -50,9 +50,11 @@ func login(ctx context.Context, c *Config) error {
 	// Save cookies for reuse
 	if err := saveCookies(timeoutCtx, cookieFile); err != nil {
 		slog.Warn("Could not save cookies", "err", err)
+	} else {
+		slog.Info("Saved login cookies to " + cookieFile)
 	}
 
-	slog.Info("Successfully logged in! Saved cookies to " + cookieFile)
+	slog.Info("Successfully logged in!")
 	return nil
 }
 

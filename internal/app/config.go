@@ -36,8 +36,10 @@ type Config struct {
 	mb        *gomusicbrainz.WS2Client
 	taskCtx   context.Context
 
+	// Internal variables
 	noLogin               bool
 	unknownTrackDurations durationByTrackByArtist
+	deletedScrobbles      []scrobble
 
 	// Closing functions
 	allocCancel context.CancelFunc
@@ -48,7 +50,6 @@ type stats struct {
 	cacheHits                      int
 	cacheMisses                    int
 	processedScrobbles             int
-	deletedScrobbles               []scrobble
 	unknownTrackDurationsCount     int
 	skippedScrobbleUnknownDuration int
 	scrobbleDeleteFails            int

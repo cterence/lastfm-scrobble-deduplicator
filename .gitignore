@@ -41,3 +41,4 @@ track-durations.yaml
 .direnv
 cache.db
 lastfm-cookies.json
+deleted-scrobbles*

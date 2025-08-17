@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 	"github.com/cterence/scrobble-deduplicator/internal/cache"
+	"github.com/cterence/scrobble-deduplicator/internal/helpers"
 	"github.com/goccy/go-yaml"
 )
 
@@ -309,6 +311,8 @@ func generateScrobble(row string) (scrobble, error) {
 	}, nil
 }
 
+var ErrUnknownTrackAlreadyInMap = errors.New("no duration found in cache or MusicBrainz API, track already saved in unknown track durations")
+
 func getTrackDuration(ctx context.Context, c *Config, userTrackDurations durationByTrackByArtist, s *scrobble) error {
 	// Check if track is in userTrackDurations
 	if userTrackDurations != nil && userTrackDurations[s.artist] != nil && userTrackDurations[s.artist][s.track] != "" {
@@ -365,6 +369,8 @@ func getTrackDuration(ctx context.Context, c *Config, userTrackDurations duratio
 		if _, found := c.unknownTrackDurations[s.artist][s.track]; !found {
 			c.unknownTrackDurations[s.artist][s.track] = ""
 			c.runStats.unknownTrackDurationsCount++
+		} else {
+			return ErrUnknownTrackAlreadyInMap
 		}
 		return fmt.Errorf("no duration found in cache or MusicBrainz API for track %s - %s, saving to unknown track durations", s.artist, s.track)
 	}
@@ -411,7 +417,7 @@ func detectAndDeleteDuplicateScrobble(ctx context.Context, c *Config, previousSc
 		slog.Debug("duplication calculations", "previousScrobbleTimestamp", previousScrobble.timestamp, "currentScrobbleTimestamp", currentScrobble.timestamp, "timeBetweenScrobbleStarts", timeBetweenScrobbleStarts, "duplicateThreshold", c.DuplicateThreshold, "duplicateDurationThreshold", duplicateDurationThreshold, "isDuplicate", isDuplicate)
 		if isDuplicate {
 			slog.Info("🎯 Duplicate scrobble detected!", "artist", currentScrobble.artist, "track", currentScrobble.track, "timestamp", currentScrobble.timestamp)
-			c.runStats.deletedScrobbles = append(c.runStats.deletedScrobbles, currentScrobble)
+			c.deletedScrobbles = append(c.deletedScrobbles, currentScrobble)
 			_, err := backoff.Retry(ctx, func() (struct{}, error) {
 				return struct{}{}, deleteScrobble(c, currentScrobble.timestampString, c.Delete)
 			}, backoff.WithMaxTries(2))
@@ -469,18 +475,11 @@ func logStats(c *Config) {
 	slog.Info(fmt.Sprintf("MusicBrainz API cache hits: %d", c.runStats.cacheHits))
 	slog.Info(fmt.Sprintf("MusicBrainz API cache misses: %d", c.runStats.cacheMisses))
 	slog.Info(fmt.Sprintf("Scrobbles processed: %d", c.runStats.processedScrobbles))
-	slog.Info(fmt.Sprintf("Scrobbles deleted (if delete enabled): %d", len(c.runStats.deletedScrobbles)))
+	slog.Info(fmt.Sprintf("Scrobbles deleted (if delete enabled): %d", len(c.deletedScrobbles)))
 	slog.Info(fmt.Sprintf("Unknown duration track count: %d", c.runStats.unknownTrackDurationsCount))
 	slog.Info(fmt.Sprintf("Scrobbles skipped due to unknown track duration: %d", c.runStats.skippedScrobbleUnknownDuration))
 	slog.Info(fmt.Sprintf("Scrobbles not deleted due to error: %d", c.runStats.scrobbleDeleteFails))
 	slog.Info(fmt.Sprintf("Elapsed time: %s", c.runStats.elapsedTime.Truncate(time.Millisecond/10)))
-
-	if len(c.runStats.deletedScrobbles) > 0 {
-		slog.Info("Deleted scrobbles:")
-		for _, s := range c.runStats.deletedScrobbles {
-			fmt.Printf("Artist: %s - Track: %s - Scrobble time: %s\n", s.artist, s.track, s.timestamp)
-		}
-	}
 }
 
 func writeUnknownTrackDurations(unknownTrackDurations durationByTrackByArtist) error {
@@ -516,6 +515,53 @@ func writeUnknownTrackDurations(unknownTrackDurations durationByTrackByArtist) e
 	return nil
 }
 
+func exportScrobblesToCSV(baseFilename string, startTime time.Time, scrobbles []scrobble) {
+	timestamp := startTime.Format("20060102-150405")
+	filename := fmt.Sprintf("%s-%s.csv", baseFilename, timestamp)
+
+	file, err := os.Create(filename)
+	if err != nil {
+		slog.Warn("⚠️ Could not create deleted scrobble file, falling back to logging scrobbles as CSV", "file", filename, "error", err)
+		logScrobblesCSV(scrobbles)
+		return
+	}
+	defer helpers.CloseFile(file)
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	// header
+	_ = writer.Write([]string{"Artist", "Track", "Timestamp", "TimestampString"})
+
+	for _, s := range scrobbles {
+		record := []string{
+			s.artist,
+			s.track,
+			s.timestamp.Format(time.RFC3339),
+			s.timestampString,
+		}
+		_ = writer.Write(record)
+	}
+}
+
+func logScrobblesCSV(scrobbles []scrobble) {
+	var sb strings.Builder
+
+	// header
+	sb.WriteString("Artist,Track,Timestamp,TimestampString\n")
+
+	for _, s := range scrobbles {
+		sb.WriteString(fmt.Sprintf("%s,%s,%s,%s\n",
+			s.artist,
+			s.track,
+			s.timestamp.Format(time.RFC3339),
+			s.timestampString,
+		))
+	}
+
+	fmt.Printf("Scrobbles CSV:\n%s", sb.String())
+}
+
 func finishRun(c *Config) error {
 	defer c.close()
 	logStats(c)
@@ -525,6 +571,10 @@ func finishRun(c *Config) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	if len(c.deletedScrobbles) > 0 {
+		exportScrobblesToCSV("deleted-scrobbles", c.startTime, c.deletedScrobbles)
 	}
 
 	return nil

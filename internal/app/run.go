@@ -59,7 +59,9 @@ func Run(ctx context.Context, c *Config) error {
 			// Check if the track is in the user specified track durations file
 			err := getTrackDuration(ctx, c, userTrackDurations, &s)
 			if err != nil {
-				slog.Warn("failed to get track duration, skipping scrobble", "error", err)
+				if !errors.Is(err, ErrUnknownTrackAlreadyInMap) {
+					slog.Warn("failed to get track duration, skipping scrobble", "error", err)
+				}
 				c.runStats.skippedScrobbleUnknownDuration++
 				continue
 			}
