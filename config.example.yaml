@@ -1,9 +1,10 @@
-cacheType: inmemory # redis|inmemory
+cacheType: inmemory # redis|file|inmemory
 lastfm:
   username: musiclover
   password: secret!
-startPage: 15
-browserHeadful: true
+from: 01-01-2025
+to: 01-03-2025
+browserHeadful: false
 redisURL: "" # redis://localhost:6379/0
 logLevel: info
 delete: false

@@ -20,45 +20,7 @@ import (
 	"github.com/chromedp/chromedp"
 	"github.com/cterence/scrobble-deduplicator/internal/cache"
 	"github.com/goccy/go-yaml"
-	"github.com/michiwend/gomusicbrainz"
 )
-
-type Config struct {
-	// Inputs
-	FilePath           string
-	CacheType          string
-	LastFMUsername     string
-	LastFMPassword     string
-	Delete             bool
-	StartPage          int
-	StartDay           time.Time
-	EndDay             time.Time
-	BrowserHeadful     bool
-	RedisURL           string
-	BrowserURL         string
-	LogLevel           string
-	DuplicateThreshold int
-
-	// Internal dependencies
-	startTime time.Time
-	cache     cache.Cache
-	runStats  stats
-	mb        *gomusicbrainz.WS2Client
-	taskCtx   context.Context
-
-	// Closing functions
-	allocCancel context.CancelFunc
-	taskCancel  context.CancelFunc
-}
-
-type stats struct {
-	cacheHits                  int
-	cacheMisses                int
-	processedScrobbles         int
-	deletedScrobbles           []scrobble
-	unknownTrackDurationsCount int
-	elapsedTime                time.Duration
-}
 
 type scrobble struct {
 	artist          string
@@ -77,24 +39,6 @@ const (
 	LastFMQueryDayFormat     = "2006-01-02"
 )
 
-func checkConfig(c *Config) error {
-	slog.Debug("Validating config")
-
-	if c.CacheType == "redis" && c.RedisURL == "" {
-		return errors.New("must set redis-url if cache-type is redis")
-	}
-
-	if c.StartPage != 0 && (!c.StartDay.IsZero() || !c.EndDay.IsZero()) {
-		return errors.New("start-page and start-day / end-day must not be set at the same time")
-	}
-
-	if !c.StartDay.IsZero() && !c.EndDay.IsZero() && c.StartDay.After(c.EndDay) {
-		return errors.New("end-day must be after start-day")
-	}
-
-	return nil
-}
-
 func getStartingPage(c *Config) (int, error) {
 	timeoutCtx, cancel := context.WithTimeout(c.taskCtx, browserOperationsTimeout)
 	defer cancel()
@@ -106,32 +50,31 @@ func getStartingPage(c *Config) (int, error) {
 	noScrobbles := false
 	err := chromedp.Run(timeoutCtx,
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			if c.StartPage != 0 {
-				err := chromedp.Navigate("https://www.last.fm/user/" + c.LastFMUsername + "/library").Do(ctx)
-				if err != nil {
-					return err
-				}
+			err := chromedp.Navigate("https://www.last.fm/user/" + c.LastFMUsername + "/library").Do(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to navigate to user library: %w", err)
 			}
-			if !c.StartDay.IsZero() && !c.EndDay.IsZero() {
-				startDayExpr, endDayExpr := c.StartDay.Format(LastFMQueryDayFormat), c.EndDay.Format(LastFMQueryDayFormat)
-				err := chromedp.Navigate(fmt.Sprintf("https://www.last.fm/user/%s/library?from=%s&to=%s", c.LastFMUsername, startDayExpr, endDayExpr)).Do(ctx)
+
+			if !c.From.IsZero() && !c.To.IsZero() {
+				fromExpr, toExpr := c.From.Format(LastFMQueryDayFormat), c.To.Format(LastFMQueryDayFormat)
+				err := chromedp.Navigate(fmt.Sprintf("https://www.last.fm/user/%s/library?from=%s&to=%s", c.LastFMUsername, fromExpr, toExpr)).Do(ctx)
 				if err != nil {
-					return err
+					return fmt.Errorf("failed to navigate to user library with from / to dates: %w", err)
 				}
 			}
 
-			err := chromedp.WaitVisible(`//h1[@class='content-top-header']`, chromedp.BySearch).Do(ctx)
+			err = chromedp.WaitVisible(`//h1[@class='content-top-header']`, chromedp.BySearch).Do(ctx)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to wait for h1 with content-top-header class: %w", err)
 			}
 
-			var nodes []*cdp.Node
-			err = chromedp.Nodes(`//p[@class='no-data-message']`, &nodes, chromedp.AtLeast(0)).Do(ctx)
+			var noDataNodes []*cdp.Node
+			err = chromedp.Nodes(`//p[@class='no-data-message']`, &noDataNodes, chromedp.AtLeast(0)).Do(ctx)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to get no-data-message p element: %w", err)
 			}
 			// Early return if we find no scrobble
-			if len(nodes) == 1 {
+			if len(noDataNodes) == 1 {
 				noScrobbles = true
 				return nil
 			}
@@ -139,18 +82,21 @@ func getStartingPage(c *Config) (int, error) {
 			var scrobbleCountStr string
 			err = chromedp.Text(`//h2[@class='metadata-title' and text()='Scrobbles']/../p`, &scrobbleCountStr, chromedp.BySearch).Do(ctx)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to get scrobble count: %w", err)
 			}
 
+			scrobbleCountStr = strings.ReplaceAll(scrobbleCountStr, ",", "")
 			scrobbleCount, err = strconv.Atoi(scrobbleCountStr)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to convert scrobble count to int: %w", err)
 			}
+
+			slog.Info("Scrobbles to process", "count", scrobbleCountStr)
 
 			if scrobbleCount > 50 {
 				err = chromedp.Evaluate(`[...document.querySelectorAll('.pagination-page')].map((e) => e.innerText)`, &pageNumbers).Do(ctx)
 				if err != nil {
-					return err
+					return fmt.Errorf("failed to get page numbers: %w", err)
 				}
 			}
 
@@ -218,8 +164,8 @@ func getScrobbles(c *Config, currentPage int) ([]scrobble, error) {
 	defer timeoutCancel()
 
 	libraryPageQuery := fmt.Sprintf("https://www.last.fm/user/%s/library?page=%s", c.LastFMUsername, strconv.Itoa(currentPage))
-	if !c.StartDay.IsZero() && !c.EndDay.IsZero() {
-		libraryPageQuery += fmt.Sprintf("&from=%s&to=%s", c.StartDay.Format(LastFMQueryDayFormat), c.EndDay.Format(LastFMQueryDayFormat))
+	if !c.From.IsZero() && !c.To.IsZero() {
+		libraryPageQuery += fmt.Sprintf("&from=%s&to=%s", c.From.Format(LastFMQueryDayFormat), c.To.Format(LastFMQueryDayFormat))
 	}
 
 	slog.Debug("get scrobble library page", "query", libraryPageQuery)
@@ -467,6 +413,8 @@ func logStats(c *Config) {
 	slog.Info(fmt.Sprintf("Scrobbles processed: %d", c.runStats.processedScrobbles))
 	slog.Info(fmt.Sprintf("Scrobbles deleted (if delete enabled): %d", len(c.runStats.deletedScrobbles)))
 	slog.Info(fmt.Sprintf("Unknown duration track count: %d", c.runStats.unknownTrackDurationsCount))
+	slog.Info(fmt.Sprintf("Scrobbles skipped due to unknown track duration: %d", c.runStats.skippedScrobbleUnknownDuration))
+	slog.Info(fmt.Sprintf("Scrobbles not deleted due to error: %d", c.runStats.scrobbleDeleteFails))
 	slog.Info(fmt.Sprintf("Elapsed time: %s", c.runStats.elapsedTime.Truncate(time.Millisecond/10)))
 
 	if len(c.runStats.deletedScrobbles) > 0 {

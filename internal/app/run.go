@@ -9,18 +9,24 @@ import (
 )
 
 func Run(ctx context.Context, c *Config) error {
-	err := checkConfig(c)
+	err := c.checkConfig()
 	if err != nil {
 		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	if c.Delete {
+		slog.Info("⚠️ Scrobble deletion enabled")
+	} else {
+		slog.Info("Scrobble deletion disabled")
 	}
 
 	err = initApp(ctx, c)
 	if err != nil {
 		return fmt.Errorf("failed to init app: %w", err)
 	}
-	defer c.allocCancel()
-	defer c.taskCancel()
-	defer c.cache.Close()
+	defer c.close()
+
+	c.handleInterrupts()
 
 	err = login(c.taskCtx, c)
 	if err != nil {
@@ -55,6 +61,7 @@ func Run(ctx context.Context, c *Config) error {
 			err := getTrackDuration(ctx, c, userTrackDurations, unknownTrackDurations, &s)
 			if err != nil {
 				slog.Warn("failed to get track duration, skipping scrobble", "error", err)
+				c.runStats.skippedScrobbleUnknownDuration++
 				continue
 			}
 			slog.Debug("Track duration found", "artist", s.artist, "track", s.track, "duration", s.duration)
@@ -64,6 +71,7 @@ func Run(ctx context.Context, c *Config) error {
 				// Check if the current scrobble is a duplicate of the previous one
 				lastScrobbleDeleted, err = detectAndDeleteDuplicateScrobble(ctx, c, previousScrobble, s)
 				if err != nil {
+					c.runStats.scrobbleDeleteFails++
 					slog.Warn("failed to detect and delete duplicated scrobble", "error", err)
 				}
 			}

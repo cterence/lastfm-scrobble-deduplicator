@@ -43,8 +43,8 @@ func main() {
 		lastFMUsername     string
 		lastFMPassword     string
 		startPage          int
-		startDay           time.Time
-		endDay             time.Time
+		from               time.Time
+		to                 time.Time
 		browserHeadful     bool
 		browserURL         string
 		redisURL           string
@@ -102,22 +102,22 @@ func main() {
 				Destination: &startPage,
 			},
 			&cli.TimestampFlag{
-				Name:  "start-day",
+				Name:  "from",
 				Usage: "Day at which the program should start deduplicating scrobbles (layout: 02-01-2006)",
 				Config: cli.TimestampConfig{
 					Layouts: []string{app.InputDayFormat},
 				},
-				Sources:     cli.NewValueSourceChain(cli.EnvVar("START_DAY"), yaml.YAML("startDay", altsrc.NewStringPtrSourcer(&configFilePath))),
-				Destination: &startDay,
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("FROM"), yaml.YAML("from", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &from,
 			},
 			&cli.TimestampFlag{
-				Name:  "end-day",
+				Name:  "to",
 				Usage: "Day at which the program should end deduplicating scrobbles (layout: 02-01-2006)",
 				Config: cli.TimestampConfig{
 					Layouts: []string{app.InputDayFormat},
 				},
-				Sources:     cli.NewValueSourceChain(cli.EnvVar("END_DAY"), yaml.YAML("endDay", altsrc.NewStringPtrSourcer(&configFilePath))),
-				Destination: &endDay,
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("TO"), yaml.YAML("to", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &to,
 			},
 			&cli.StringFlag{
 				Name:        "cache-type",
@@ -161,8 +161,8 @@ func main() {
 				LastFMUsername:     lastFMUsername,
 				LastFMPassword:     lastFMPassword,
 				StartPage:          startPage,
-				StartDay:           startDay,
-				EndDay:             endDay,
+				From:               from,
+				To:                 to,
 				BrowserHeadful:     browserHeadful,
 				RedisURL:           redisURL,
 				BrowserURL:         browserURL,
