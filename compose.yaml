@@ -1,19 +1,14 @@
-name: prod
+name: scrobble-deduplicator
 services:
   app:
-    container_name: app-prod
-    build:
-      context: .
-      target: production
-    command:
-      - /app/main
-      - -c
-      - config.yaml
+    container_name: app
+    image: ghcr.io/cterence/scrobble-deduplicator:latest
     environment:
       REDIS_URL: redis://redis:6379/0
-      BROWSER_URL: ws://chromium-prod:3000?token=local
+      BROWSER_URL: ws://chromium:3000?token=local
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -21,28 +16,27 @@ services:
         condition: service_healthy
 
   redis:
-    container_name: redis-prod
+    container_name: redis
     image: redis:latest
     ports:
       - "6379:6379"
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 3
-    volumes:
-      - redis-data:/data
 
   chromium:
-    container_name: chromium-prod
+    container_name: chromium
     image: ghcr.io/browserless/chromium:latest
     environment:
       TOKEN: local
-      HOST: chromium-prod
       DEBUG: -*
       TIMEOUT: 600000
     healthcheck:
-      test: ["CMD", "curl", "http://chromium-prod:3000/active?token=local"]
+      test: ["CMD", "curl", "http://localhost:3000/active?token=local"]
       interval: 10s
       timeout: 5s
       retries: 3
