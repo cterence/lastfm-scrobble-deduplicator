@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/url"
 	"os"
 	"path"
 	"slices"
@@ -111,17 +112,30 @@ func getStartPage(c *Config) (int, error) {
 				}
 			}
 
+			query := fmt.Sprintf("https://www.last.fm/user/%s/library", c.LastFMUsername)
+
+			url, err := url.Parse(query)
+			if err != nil {
+				return fmt.Errorf("failed to parse library query URL: %w", err)
+			}
+
 			if !c.From.IsZero() {
 				fromExpr := c.From.Format(LastFMQueryDayFormat)
-				query := fmt.Sprintf("https://www.last.fm/user/%s/library?from=%s", c.LastFMUsername, fromExpr)
-				if !c.To.IsZero() {
-					toExpr := c.To.Format(LastFMQueryDayFormat)
-					query += fmt.Sprintf("&to=%s", toExpr)
-				}
-				err := chromedp.Navigate(query).Do(ctx)
-				if err != nil {
-					return fmt.Errorf("failed to navigate to user library with from / to dates: %w", err)
-				}
+				q := url.Query()
+				q.Add("from", fromExpr)
+				url.RawQuery = q.Encode()
+			}
+
+			if !c.To.IsZero() {
+				toExpr := c.To.Format(LastFMQueryDayFormat)
+				q := url.Query()
+				q.Add("to", toExpr)
+				url.RawQuery = q.Encode()
+			}
+
+			err = chromedp.Navigate(url.String()).Do(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to navigate to user library with from / to dates: %w", err)
 			}
 
 			err = chromedp.WaitVisible(`//h1[@class='content-top-header']`, chromedp.BySearch).Do(ctx)
@@ -152,7 +166,11 @@ func getStartPage(c *Config) (int, error) {
 				return fmt.Errorf("failed to convert scrobble count to int: %w", err)
 			}
 
-			slog.Info("Scrobbles to process", "count", scrobbleCountStr)
+			if c.StartPage != 0 && scrobbleCount > 50 {
+				scrobbleCount = c.StartPage * 50
+			}
+
+			slog.Info("Scrobbles to process", "count", scrobbleCount)
 
 			if scrobbleCount > 50 {
 				err = chromedp.Evaluate(`[...document.querySelectorAll('.pagination-page')].map((e) => e.innerText)`, &pageNumbers).Do(ctx)
@@ -220,15 +238,31 @@ func getScrobbles(c *Config, currentPage int) ([]scrobble, error) {
 	timeoutCtx, timeoutCancel := context.WithTimeout(c.taskCtx, browserOperationsTimeout)
 	defer timeoutCancel()
 
-	libraryPageQuery := fmt.Sprintf("https://www.last.fm/user/%s/library?page=%s", c.LastFMUsername, strconv.Itoa(currentPage))
-	if !c.From.IsZero() && !c.To.IsZero() {
-		libraryPageQuery += fmt.Sprintf("&from=%s&to=%s", c.From.Format(LastFMQueryDayFormat), c.To.Format(LastFMQueryDayFormat))
+	query := fmt.Sprintf("https://www.last.fm/user/%s/library?page=%s", c.LastFMUsername, strconv.Itoa(currentPage))
+
+	url, err := url.Parse(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse library query URL: %w", err)
 	}
 
-	slog.Debug("get scrobble library page", "query", libraryPageQuery)
+	if !c.From.IsZero() {
+		fromExpr := c.From.Format(LastFMQueryDayFormat)
+		q := url.Query()
+		q.Add("from", fromExpr)
+		url.RawQuery = q.Encode()
+	}
 
-	err := chromedp.Run(timeoutCtx,
-		chromedp.Navigate(libraryPageQuery),
+	if !c.To.IsZero() {
+		toExpr := c.To.Format(LastFMQueryDayFormat)
+		q := url.Query()
+		q.Add("to", toExpr)
+		url.RawQuery = q.Encode()
+	}
+
+	slog.Debug("get scrobble library page", "query", query)
+
+	err = chromedp.Run(timeoutCtx,
+		chromedp.Navigate(url.String()),
 		chromedp.WaitVisible(`.top-bar`, chromedp.ByQuery),
 		// Remove the top bar to avoid clicking on it by accident when deleting scrobbles
 		chromedp.Evaluate("let node1 = document.querySelector('.top-bar'); node1.parentNode.removeChild(node1)", nil),
