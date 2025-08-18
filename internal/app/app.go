@@ -381,16 +381,16 @@ func getTrackDuration(ctx context.Context, c *Config, userTrackDurations duratio
 		if errors.Is(err, cache.ErrCacheMiss) {
 			c.runStats.cacheMisses++
 			slog.Debug("Cache miss for track duration query", "artist", s.artist, "track", s.track)
-			trackDurations, err := backoff.Retry(ctx, func() (time.Duration, error) {
+			trackDuration, err := backoff.Retry(ctx, func() (time.Duration, error) {
 				return getTrackDurationsFromMusicBrainz(ctx, c, s.artist, s.track, cacheKey)
 			}, backoff.WithBackOff(backoff.NewExponentialBackOff()), backoff.WithMaxTries(10))
 			if err != nil {
 				return fmt.Errorf("failed to get track duration from MusicBrainz API: %w", err)
 			}
-			if s.duration <= 0 {
+			if trackDuration <= 0 {
 				return addToUnknownTrackDurations(c, s.artist, s.track)
 			}
-			s.duration = trackDurations
+			s.duration = trackDuration
 			slog.Debug("Found track duration from MusicBrainz API", "artist", s.artist, "track", s.track, "duration", s.duration)
 			return nil
 		}
