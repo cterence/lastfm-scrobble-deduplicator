@@ -537,7 +537,7 @@ func logStats(c *Config) {
 	slog.Info(fmt.Sprintf("Elapsed time: %s", c.runStats.elapsedTime.Truncate(time.Millisecond/10)))
 }
 
-func writeUnknownTrackDurations(unknownTrackDurations durationByTrackByArtist) error {
+func writeUnknownTrackDurations(unknownTrackDurations durationByTrackByArtist, dataDir string) error {
 	userTrackDurations, err := getUserTrackDurations()
 	if err != nil {
 		return err
@@ -557,7 +557,7 @@ func writeUnknownTrackDurations(unknownTrackDurations durationByTrackByArtist) e
 
 	bytes = append([]byte("# This file lists tracks that the program could not find a duration for using the MusicBrainz API\n# If a track has an unknown duration, this program will never delete its duplicate scrobbles\n# Specify the duration of each track using the Go time ParseDuration format (ex: 5m06s), then rerun the program\n# You may use it to override a track length, but you must strictly match the scrobble's artist and track name\n\n"), bytes...)
 
-	err = os.WriteFile(customTrackDurationsFile, bytes, 0666)
+	err = os.WriteFile(path.Join(dataDir, customTrackDurationsFile), bytes, 0666)
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
 			slog.Warn(fmt.Sprintf("Failed to save unknown track durations in %s", customTrackDurationsFile), "error", err)
@@ -570,18 +570,18 @@ func writeUnknownTrackDurations(unknownTrackDurations durationByTrackByArtist) e
 	return nil
 }
 
-func exportScrobblesToCSV(baseFilename string, startTime time.Time, delete bool, scrobbles []scrobble) {
-	timestamp := startTime.Format("20060102-150405")
+func exportScrobblesToCSV(c *Config, baseFilename string) {
+	timestamp := c.startTime.Format("20060102-150405")
 	filename := fmt.Sprintf("%s-%s.csv", baseFilename, timestamp)
 
-	slices.SortFunc(scrobbles, func(s1, s2 scrobble) int {
+	slices.SortFunc(c.deletedScrobbles, func(s1, s2 scrobble) int {
 		return s1.timestamp.Compare(s2.timestamp)
 	})
 
-	file, err := os.Create(filename)
+	file, err := os.Create(path.Join(c.DataDir, filename))
 	if err != nil {
 		slog.Warn("⚠️ Could not create deleted scrobble file, falling back to logging scrobbles as CSV", "file", filename, "error", err)
-		logScrobblesCSV(scrobbles)
+		logScrobblesCSV(c.deletedScrobbles)
 		return
 	}
 	defer helpers.CloseFile(file)
@@ -592,7 +592,7 @@ func exportScrobblesToCSV(baseFilename string, startTime time.Time, delete bool,
 	// header
 	_ = writer.Write([]string{"Artist", "Track", "Timestamp", "TimestampString"})
 
-	for _, s := range scrobbles {
+	for _, s := range c.deletedScrobbles {
 		record := []string{
 			s.artist,
 			s.track,
@@ -602,7 +602,7 @@ func exportScrobblesToCSV(baseFilename string, startTime time.Time, delete bool,
 		_ = writer.Write(record)
 	}
 
-	if delete {
+	if c.Delete {
 		slog.Info("Deleted scrobbles saved to file", "filename", filename)
 	} else {
 		slog.Info("Would-be deleted scrobbles saved to file", "filename", filename)
@@ -632,14 +632,14 @@ func finishRun(c *Config) error {
 	logStats(c)
 
 	if len(c.unknownTrackDurations) > 0 {
-		err := writeUnknownTrackDurations(c.unknownTrackDurations)
+		err := writeUnknownTrackDurations(c.unknownTrackDurations, c.DataDir)
 		if err != nil {
 			return err
 		}
 	}
 
 	if len(c.deletedScrobbles) > 0 {
-		exportScrobblesToCSV("deleted-scrobbles", c.startTime, c.Delete, c.deletedScrobbles)
+		exportScrobblesToCSV(c, "deleted-scrobbles")
 	}
 
 	return nil

@@ -4,8 +4,10 @@ lastfm:
   password: secret!
 from: 01-01-2025
 to: 01-03-2025
+# startPage: 3 # Incompatible with from/to arguments
 browserHeadful: false
 redisURL: "" # redis://localhost:6379/0
 logLevel: info
 delete: false
 browserURL: "" # ws://localhost:3000?token=local
+dataDir: ./data

@@ -8,7 +8,7 @@ services:
       BROWSER_URL: ws://chromium:3000?token=local
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - ./data:/app/data
+      - ./data:/app/data:rw
     depends_on:
       redis:
         condition: service_healthy

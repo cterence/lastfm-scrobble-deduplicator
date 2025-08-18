@@ -6,6 +6,7 @@ import (
 	"log"
 	"log/slog"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -56,7 +57,7 @@ func initApp(ctx context.Context, c *Config) error {
 		c.cache = cache.NewRedis(rdb)
 	case "file":
 		slog.Info("Using file cache")
-		fileCache, err := cache.NewFile(cache.CacheFileName, cache.FileCacheFlushTicker)
+		fileCache, err := cache.NewFile(path.Join(c.DataDir, cache.CacheFileName), cache.FileCacheFlushTicker)
 		if err != nil {
 			return fmt.Errorf("failed to create file cache: %w", err)
 		}

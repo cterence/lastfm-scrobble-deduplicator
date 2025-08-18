@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -20,7 +21,7 @@ const lastFMLoginURL = "https://www.last.fm/login"
 const cookieFile = "lastfm-cookies.json"
 
 func login(ctx context.Context, c *Config) error {
-	err := loadCookies(ctx, cookieFile)
+	err := loadCookies(ctx, path.Join(c.DataDir, cookieFile))
 	if err == nil {
 		slog.Info("Loaded session cookie, skipping login")
 		c.noLogin = true
@@ -48,7 +49,7 @@ func login(ctx context.Context, c *Config) error {
 	}
 
 	// Save cookies for reuse
-	if err := saveCookies(timeoutCtx, cookieFile); err != nil {
+	if err := saveCookies(timeoutCtx, cookieFile, c.DataDir); err != nil {
 		slog.Warn("Could not save cookies", "err", err)
 	} else {
 		slog.Info("Saved login cookies to " + cookieFile)
@@ -72,13 +73,13 @@ func getCookies(ctx context.Context) ([]*network.Cookie, error) {
 }
 
 // Save cookies after login
-func saveCookies(ctx context.Context, filename string) error {
+func saveCookies(ctx context.Context, filename string, dataDir string) error {
 	cookies, err := getCookies(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get cookies: %w", err)
 	}
 
-	f, err := os.Create(filename)
+	f, err := os.Create(path.Join(dataDir, filename))
 	if err != nil {
 		slog.Warn("Failed to save cookie file", "error", err)
 		return nil

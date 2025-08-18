@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"time"
 
 	"github.com/cterence/scrobble-deduplicator/internal/app"
@@ -52,7 +53,14 @@ func main() {
 		logLevel           string
 		duplicateThreshold int
 		processingMode     string
+		dataDir            string
 	)
+
+	wd, err := os.Getwd()
+	if err != nil {
+		slog.Error(err.Error())
+		os.Exit(1)
+	}
 
 	cmd := &cli.Command{
 		Name:  "scrobble-deduplicator",
@@ -153,6 +161,13 @@ func main() {
 				Destination: &redisURL,
 			},
 			&cli.StringFlag{
+				Name:        "data-dir",
+				Usage:       "Path to a directory that this program can use to read and produce files",
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("DATA_DIR"), yaml.YAML("dataDir", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Value:       path.Join(wd, "data"),
+				Destination: &dataDir,
+			},
+			&cli.StringFlag{
 				Name:        "log-level",
 				Usage:       "Log level (debug, info, warn, error)",
 				Sources:     cli.NewValueSourceChain(cli.EnvVar("LOG_LEVEL"), yaml.YAML("logLevel", altsrc.NewStringPtrSourcer(&configFilePath))),
@@ -178,6 +193,7 @@ func main() {
 				LogLevel:           logLevel,
 				DuplicateThreshold: duplicateThreshold,
 				ProcessingMode:     processingMode,
+				DataDir:            dataDir,
 			}
 
 			err := setLogger(c.LogLevel)

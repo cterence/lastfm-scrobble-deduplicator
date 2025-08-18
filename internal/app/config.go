@@ -29,6 +29,7 @@ type Config struct {
 	LogLevel           string
 	DuplicateThreshold int
 	ProcessingMode     string
+	DataDir            string
 
 	// Internal dependencies
 	startTime time.Time
