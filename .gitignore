@@ -42,3 +42,4 @@ track-durations.yaml
 cache.db
 lastfm-cookies.json
 deleted-scrobbles*
+data/**
