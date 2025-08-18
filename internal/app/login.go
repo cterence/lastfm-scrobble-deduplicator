@@ -81,8 +81,7 @@ func saveCookies(ctx context.Context, filename string, dataDir string) error {
 
 	f, err := os.Create(path.Join(dataDir, filename))
 	if err != nil {
-		slog.Warn("Failed to save cookie file", "error", err)
-		return nil
+		return fmt.Errorf("failed to save cookie file: %w", err)
 	}
 	defer helpers.CloseFile(f)
 

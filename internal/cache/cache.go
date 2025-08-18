@@ -16,9 +16,9 @@ import (
 )
 
 type Cache interface {
-	// TODO: cache delete
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key string, value string) error
+	Delete(ctx context.Context, key string) error
 	Close()
 }
 
@@ -63,6 +63,11 @@ func (c *InMemory) Set(_ context.Context, key string, value string) error {
 	return nil
 }
 
+func (c *InMemory) Delete(_ context.Context, key string) error {
+	delete(c.cache, key)
+	return nil
+}
+
 func (c *InMemory) Close() {}
 
 func NewRedis(redisClient *redis.Client) Cache {
@@ -90,6 +95,10 @@ func (c *Redis) Close() {
 	if err := c.client.Close(); err != nil {
 		slog.Error("Failed to close redis client", "error", err)
 	}
+}
+
+func (c *Redis) Delete(ctx context.Context, key string) error {
+	return c.client.Del(ctx, key).Err()
 }
 
 const CacheFileName = "cache.db"
@@ -134,7 +143,7 @@ func (c *File) load() error {
 		line := scanner.Text()
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) == 2 {
-			c.data[parts[0]] = parts[1] // last wins
+			c.data[parts[0]] = parts[1]
 		}
 	}
 	return scanner.Err()
@@ -169,6 +178,11 @@ func (c *File) Close() {
 	if err := c.file.Close(); err != nil {
 		slog.Error("failed to close file cache", "error", err)
 	}
+}
+
+func (c *File) Delete(ctx context.Context, key string) error {
+	delete(c.data, key)
+	return nil
 }
 
 const FileCacheFlushTicker = 30 * time.Second

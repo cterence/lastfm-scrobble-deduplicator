@@ -38,7 +38,7 @@ func Run(ctx context.Context, c *Config) error {
 		return fmt.Errorf("failed to get starting page: %w", err)
 	}
 
-	userTrackDurations, err := getUserTrackDurations()
+	userTrackDurations, err := getUserTrackDurations(c.DataDir)
 	if err != nil {
 		return fmt.Errorf("failed to get user track durations: %w", err)
 	}
