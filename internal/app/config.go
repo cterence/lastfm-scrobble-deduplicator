@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cterence/scrobble-deduplicator/internal/cache"
+	"github.com/go-telegram/bot"
 	"github.com/michiwend/gomusicbrainz"
 )
 
@@ -19,7 +20,7 @@ type Config struct {
 	CacheType          string
 	LastFMUsername     string
 	LastFMPassword     string
-	Delete             bool
+	CanDelete          bool
 	StartPage          int
 	From               time.Time
 	To                 time.Time
@@ -28,20 +29,24 @@ type Config struct {
 	BrowserURL         string
 	LogLevel           string
 	DuplicateThreshold int
+	CompleteThreshold  int
 	ProcessingMode     string
 	DataDir            string
+	TelegramBotToken   string
+	TelegramChatID     string
 
 	// Internal dependencies
-	startTime time.Time
-	cache     cache.Cache
-	runStats  stats
-	mb        *gomusicbrainz.WS2Client
-	taskCtx   context.Context
+	startTime   time.Time
+	cache       cache.Cache
+	runStats    stats
+	mb          *gomusicbrainz.WS2Client
+	taskCtx     context.Context
+	telegramBot *bot.Bot
 
 	// Internal variables
 	noLogin               bool
 	unknownTrackDurations durationByTrackByArtist
-	deletedScrobbles      []scrobble
+	deletedScrobbles      []*scrobble
 
 	// Closing functions
 	allocCancel context.CancelFunc
@@ -73,6 +78,18 @@ func (c *Config) checkConfig() error {
 		return errors.New(`"to" date must be after "from" date`)
 	}
 
+	if c.DuplicateThreshold < 0 || c.DuplicateThreshold > 100 {
+		return errors.New("duplicate-threshold must be between 0 and 100")
+	}
+
+	if c.CompleteThreshold < 0 || c.CompleteThreshold > 100 {
+		return errors.New("complete-threshold must be between 0 and 100")
+	}
+
+	if (c.TelegramBotToken != "" && c.TelegramChatID == "") || (c.TelegramBotToken == "" && c.TelegramChatID != "") {
+		return errors.New("telegram-bot-token and telegram-chat-id must both be set")
+	}
+
 	return nil
 }
 
@@ -82,13 +99,13 @@ func (c *Config) close() {
 	c.cache.Close()
 }
 
-func (c *Config) handleInterrupts() {
+func (c *Config) handleInterrupts(ctx context.Context) {
 	sigInterrupt := make(chan os.Signal, 1)
 	signal.Notify(sigInterrupt, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigInterrupt
 		slog.Warn("Closing due to interrupt")
-		if err := finishRun(c); err != nil {
+		if err := finishRun(ctx, c); err != nil {
 			slog.Error("Failed to finish run", "error", err)
 		}
 

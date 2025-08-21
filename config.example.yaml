@@ -8,6 +8,8 @@ to: 01-03-2025
 browserHeadful: false
 redisURL: "" # redis://localhost:6379/0
 logLevel: info
-delete: false
+canDelete: false
 browserURL: "" # ws://localhost:3000?token=local
 dataDir: ./data
+telegramBotToken: ""
+telegramChatID: ""

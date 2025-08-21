@@ -13,7 +13,7 @@ func Run(ctx context.Context, c *Config) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	if c.Delete {
+	if c.CanDelete {
 		slog.Info("⚠️ Scrobble deletion enabled")
 	} else {
 		slog.Info("Scrobble deletion disabled")
@@ -23,7 +23,7 @@ func Run(ctx context.Context, c *Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to init app: %w", err)
 	}
-	c.handleInterrupts()
+	c.handleInterrupts(ctx)
 
 	err = login(c.taskCtx, c)
 	if err != nil {
@@ -56,7 +56,7 @@ func Run(ctx context.Context, c *Config) error {
 
 	slog.Info("Processing complete!")
 
-	if err := finishRun(c); err != nil {
+	if err := finishRun(ctx, c); err != nil {
 		return fmt.Errorf("failed to finish run: %w", err)
 	}
 

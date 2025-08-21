@@ -14,6 +14,7 @@ import (
 	"github.com/cenkalti/backoff/v5"
 	"github.com/chromedp/chromedp"
 	"github.com/cterence/scrobble-deduplicator/internal/cache"
+	"github.com/go-telegram/bot"
 	"github.com/michiwend/gomusicbrainz"
 	"github.com/redis/go-redis/v9"
 )
@@ -107,6 +108,14 @@ func initApp(ctx context.Context, c *Config) error {
 	}, backoff.WithBackOff(backoff.NewConstantBackOff(3*time.Second)), backoff.WithMaxTries(10))
 	if err != nil {
 		return fmt.Errorf("failed to start browser: %w", err)
+	}
+
+	if c.TelegramBotToken != "" {
+		b, err := bot.New(c.TelegramBotToken)
+		if err != nil {
+			return fmt.Errorf("failed to init telegram bot: %w", err)
+		}
+		c.telegramBot = b
 	}
 
 	c.taskCtx = taskCtx

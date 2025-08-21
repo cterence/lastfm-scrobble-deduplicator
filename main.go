@@ -49,11 +49,14 @@ func main() {
 		browserHeadful     bool
 		browserURL         string
 		redisURL           string
-		delete             bool
+		canDelete          bool
 		logLevel           string
 		duplicateThreshold int
+		completeThreshold  int
 		processingMode     string
 		dataDir            string
+		telegramBotToken   string
+		telegramChatID     string
 	)
 
 	wd, err := os.Getwd()
@@ -94,7 +97,7 @@ func main() {
 				Usage:       "Delete duplicate scrobbles",
 				Value:       false,
 				Sources:     cli.NewValueSourceChain(cli.EnvVar("DELETE"), yaml.YAML("delete", altsrc.NewStringPtrSourcer(&configFilePath))),
-				Destination: &delete,
+				Destination: &canDelete,
 			},
 			&cli.IntFlag{
 				Name:        "duplicate-threshold",
@@ -102,6 +105,12 @@ func main() {
 				Value:       90,
 				Sources:     cli.NewValueSourceChain(cli.EnvVar("DUPLICATE_THRESHOLD"), yaml.YAML("duplicateThreshold", altsrc.NewStringPtrSourcer(&configFilePath))),
 				Destination: &duplicateThreshold,
+			},
+			&cli.IntFlag{
+				Name:        "complete-threshold",
+				Usage:       "Percentage of a track's duration to consider a scrobble complete, set a value to enable",
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("COMPLETE_THRESHOLD"), yaml.YAML("completeThreshold", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &completeThreshold,
 			},
 			&cli.IntFlag{
 				Name:        "start-page",
@@ -174,6 +183,18 @@ func main() {
 				Value:       "info",
 				Destination: &logLevel,
 			},
+			&cli.StringFlag{
+				Name:        "telegram-bot-token",
+				Usage:       "Telegram Bot token to send a message to when a run finishes",
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("TELEGRAM_BOT_TOKEN"), yaml.YAML("telegram.botToken", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &telegramBotToken,
+			},
+			&cli.StringFlag{
+				Name:        "telegram-chat-id",
+				Usage:       "Telegram chat ID where the bot can send message to",
+				Sources:     cli.NewValueSourceChain(cli.EnvVar("TELEGRAM_CHAT_ID"), yaml.YAML("telegram.chatID", altsrc.NewStringPtrSourcer(&configFilePath))),
+				Destination: &telegramChatID,
+			},
 		},
 		Action: func(context.Context, *cli.Command) error {
 			ctx := context.Background()
@@ -189,11 +210,14 @@ func main() {
 				BrowserHeadful:     browserHeadful,
 				RedisURL:           redisURL,
 				BrowserURL:         browserURL,
-				Delete:             delete,
+				CanDelete:          canDelete,
 				LogLevel:           logLevel,
 				DuplicateThreshold: duplicateThreshold,
+				CompleteThreshold:  completeThreshold,
 				ProcessingMode:     processingMode,
 				DataDir:            dataDir,
+				TelegramBotToken:   telegramBotToken,
+				TelegramChatID:     telegramChatID,
 			}
 
 			err := setLogger(c.LogLevel)

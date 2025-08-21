@@ -23,6 +23,8 @@ import (
 	"github.com/chromedp/chromedp"
 	"github.com/cterence/scrobble-deduplicator/internal/cache"
 	"github.com/cterence/scrobble-deduplicator/internal/helpers"
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 	"github.com/goccy/go-yaml"
 )
 
@@ -31,7 +33,7 @@ type scrobble struct {
 	track           string
 	timestamp       time.Time
 	timestampString string
-	duration        time.Duration
+	trackDuration   time.Duration
 }
 
 type durationByTrackByArtist map[string]map[string]string
@@ -356,8 +358,8 @@ func getTrackDuration(ctx context.Context, c *Config, userTrackDurations duratio
 		if err != nil {
 			slog.Error("Failed to parse user duration", "artist", s.artist, "track", s.track, "error", err)
 		}
-		s.duration = trackDuration
-		slog.Debug("Found track duration in user track durations", "artist", s.artist, "track", s.track, "duration", s.duration)
+		s.trackDuration = trackDuration
+		slog.Debug("Found track duration in user track durations", "artist", s.artist, "track", s.track, "duration", s.trackDuration)
 
 		return nil
 	}
@@ -390,8 +392,8 @@ func getTrackDuration(ctx context.Context, c *Config, userTrackDurations duratio
 			if trackDuration <= 0 {
 				return addToUnknownTrackDurations(c, s.artist, s.track)
 			}
-			s.duration = trackDuration
-			slog.Debug("Found track duration from MusicBrainz API", "artist", s.artist, "track", s.track, "duration", s.duration)
+			s.trackDuration = trackDuration
+			slog.Debug("Found track duration from MusicBrainz API", "artist", s.artist, "track", s.track, "duration", s.trackDuration)
 			return nil
 		}
 		return fmt.Errorf("failed to get cached track duration: %w", err)
@@ -402,8 +404,8 @@ func getTrackDuration(ctx context.Context, c *Config, userTrackDurations duratio
 	if err != nil {
 		return fmt.Errorf("failed to parse cached duration: %w", err)
 	}
-	s.duration = time.Duration(cachedTrackDurations) * time.Millisecond
-	if s.duration <= 0 {
+	s.trackDuration = time.Duration(cachedTrackDurations) * time.Millisecond
+	if s.trackDuration <= 0 {
 		cacheDeleteStartTime := time.Now()
 		if err := c.cache.Delete(ctx, cacheKey); err != nil {
 			slog.Warn("Failed to delete cache entry", "key", cacheKey)
@@ -411,7 +413,7 @@ func getTrackDuration(ctx context.Context, c *Config, userTrackDurations duratio
 		slog.Debug("Cache delete", "took", time.Since(cacheDeleteStartTime), "key", cacheKey)
 		return addToUnknownTrackDurations(c, s.artist, s.track)
 	}
-	slog.Debug("Cache hit for track duration query", "artist", s.artist, "track", s.track, "duration", s.duration)
+	slog.Debug("Cache hit for track duration query", "artist", s.artist, "track", s.track, "duration", s.trackDuration)
 
 	return nil
 }
@@ -472,75 +474,105 @@ func processScrobblesFromStartToEndPage(ctx context.Context, c *Config, startPag
 		}
 
 		var previousScrobble *scrobble
-		for _, s := range scrobbles {
-			previousScrobble = processPreviousAndCurrentScrobbles(ctx, c, s, previousScrobble, userTrackDurations)
+		for _, currentScrobble := range scrobbles {
+			previousScrobble = processPreviousAndCurrentScrobbles(ctx, c, previousScrobble, &currentScrobble, userTrackDurations)
+			c.runStats.processedScrobbles++
 		}
 	}
 	return nil
 }
 
-func processPreviousAndCurrentScrobbles(ctx context.Context, c *Config, s scrobble, previousScrobble *scrobble, userTrackDurations durationByTrackByArtist) *scrobble {
-	err := getTrackDuration(ctx, c, userTrackDurations, &s)
+func processPreviousAndCurrentScrobbles(ctx context.Context, c *Config, previousScrobble *scrobble, currentScrobble *scrobble, userTrackDurations durationByTrackByArtist) *scrobble {
+	err := getTrackDuration(ctx, c, userTrackDurations, currentScrobble)
 	if err != nil {
 		if !errors.Is(err, ErrUnknownTrackAlreadyInMap) {
 			slog.Warn("failed to get track duration, skipping scrobble", "error", err)
 		}
 		c.runStats.skippedScrobbleUnknownDuration++
-		return previousScrobble
+		return currentScrobble
 	}
-	slog.Debug("Track duration found", "artist", s.artist, "track", s.track, "duration", s.duration)
+	slog.Debug("Track duration found", "artist", currentScrobble.artist, "track", currentScrobble.track, "duration", currentScrobble.trackDuration)
 
-	lastScrobbleDeleted := false
 	if previousScrobble != nil {
-		// Check if the current scrobble is a duplicate of the previous one
-		lastScrobbleDeleted, err = detectAndDeleteDuplicateScrobble(ctx, c, previousScrobble, s)
+		isDuplicate, err := detectDuplicateScrobble(c, previousScrobble, currentScrobble)
 		if err != nil {
-			c.runStats.scrobbleDeleteFails++
-			slog.Warn("failed to detect and delete duplicated scrobble", "error", err)
+			slog.Warn("failed to detect duplicated scrobble", "error", err)
+			return currentScrobble
 		}
-	}
-	if !lastScrobbleDeleted || previousScrobble == nil {
-		previousScrobble = &s
-	}
-	c.runStats.processedScrobbles++
-
-	return previousScrobble
-}
-
-func detectAndDeleteDuplicateScrobble(ctx context.Context, c *Config, previousScrobble *scrobble, currentScrobble scrobble) (bool, error) {
-	// TODO: detect if 2 scrobbles are too close apart meaning that the first one was scrobbled too quickly
-	lastScrobbleDeleted := false
-	if currentScrobble.artist == previousScrobble.artist && currentScrobble.track == previousScrobble.track && currentScrobble.timestamp != previousScrobble.timestamp {
-		timeBetweenScrobbleStarts := currentScrobble.timestamp.Sub(previousScrobble.timestamp)
-		duplicateDurationThreshold := time.Duration(float64(currentScrobble.duration) * float64(c.DuplicateThreshold) / 100.0)
-		isDuplicate := timeBetweenScrobbleStarts < duplicateDurationThreshold
-
-		slog.Debug("duplication calculations", "previousScrobbleTimestamp", previousScrobble.timestamp, "currentScrobbleTimestamp", currentScrobble.timestamp, "timeBetweenScrobbleStarts", timeBetweenScrobbleStarts, "duplicateThreshold", c.DuplicateThreshold, "duplicateDurationThreshold", duplicateDurationThreshold, "isDuplicate", isDuplicate)
 		if isDuplicate {
-			slog.Info("🎯 Duplicate scrobble detected!", "artist", currentScrobble.artist, "track", currentScrobble.track, "timestamp", currentScrobble.timestamp)
-			c.deletedScrobbles = append(c.deletedScrobbles, currentScrobble)
-			_, err := backoff.Retry(ctx, func() (struct{}, error) {
-				return struct{}{}, deleteScrobble(c, currentScrobble.timestampString, c.Delete)
-			}, backoff.WithMaxTries(2))
-			if err != nil {
-				return false, fmt.Errorf("failed to delete duplicate scrobble: %w", err)
+			if err := deleteScrobbleWithRetries(ctx, c, previousScrobble.timestampString, false, 3); err != nil {
+				slog.Warn("failed to delete scrobble", "error", err)
+				return currentScrobble
 			}
-			if c.Delete {
-				lastScrobbleDeleted = true
-				slog.Info("Scrobble deleted", "artist", currentScrobble.artist, "track", currentScrobble.track, "timestamp", currentScrobble.timestamp)
+			if c.CanDelete {
+				slog.Info("Previous scrobble deleted", "artist", currentScrobble.artist, "track", currentScrobble.track, "timestamp", previousScrobble.timestamp)
+			}
+			return currentScrobble
+		}
+
+		if c.CompleteThreshold > 0 {
+			isIncomplete, err := detectIncompleteScrobble(c, previousScrobble, currentScrobble)
+			if err != nil {
+				slog.Warn("failed to detect incomplete scrobble", "error", err)
+				return currentScrobble
+			}
+
+			if isIncomplete {
+				c.deletedScrobbles = append(c.deletedScrobbles, currentScrobble)
+				if err := deleteScrobbleWithRetries(ctx, c, currentScrobble.timestampString, true, 3); err != nil {
+					slog.Warn("failed to delete scrobble", "error", err)
+					return currentScrobble
+				}
+				if c.CanDelete {
+					slog.Info("Current scrobble deleted", "artist", currentScrobble.artist, "track", currentScrobble.track, "timestamp", currentScrobble.timestamp)
+				}
+				return previousScrobble
 			}
 		}
 	}
-	return lastScrobbleDeleted, nil
+	return currentScrobble
 }
 
-func deleteScrobble(c *Config, timestamp string, delete bool) error {
+func detectDuplicateScrobble(c *Config, previousScrobble *scrobble, currentScrobble *scrobble) (bool, error) {
+	if currentScrobble.artist == previousScrobble.artist && currentScrobble.track == previousScrobble.track && currentScrobble.timestamp != previousScrobble.timestamp {
+		currentScrobbleDuration := currentScrobble.timestamp.Sub(previousScrobble.timestamp)
+		currentScrobbleCompletionPercentage := min((float64(currentScrobbleDuration)/float64(currentScrobble.trackDuration))*100, 100)
+		duplicateDurationThreshold := time.Duration(float64(currentScrobble.trackDuration) * float64(c.DuplicateThreshold) / 100.0)
+		isDuplicate := currentScrobbleCompletionPercentage < float64(c.DuplicateThreshold)
+
+		slog.Debug("duplicate scrobble detection calculations", "previousScrobbleTimestamp", previousScrobble.timestamp, "currentScrobbleTimestamp", currentScrobble.timestamp, "currentScrobbleDuration", currentScrobbleDuration, "duplicateThreshold", c.DuplicateThreshold, "duplicateDurationThreshold", duplicateDurationThreshold, "currentScrobbleCompletionPercentage", currentScrobbleCompletionPercentage, "isDuplicate", isDuplicate)
+		if isDuplicate {
+			slog.Info("🎯 Duplicate scrobble detected!", "artist", currentScrobble.artist, "track", currentScrobble.track, "previousScrobbleTimestamp", previousScrobble.timestamp, "currentScrobbleTimestamp", currentScrobble.timestamp)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func detectIncompleteScrobble(c *Config, previousScrobble *scrobble, currentScrobble *scrobble) (bool, error) {
+	currentScrobbleDuration := currentScrobble.timestamp.Sub(previousScrobble.timestamp)
+	currentScrobbleCompletionPercentage := min((float64(currentScrobbleDuration)/float64(currentScrobble.trackDuration))*100, 100)
+	completeDurationThreshold := time.Duration(float64(currentScrobble.trackDuration) * float64(c.CompleteThreshold) / 100.0)
+	isIncomplete := currentScrobbleCompletionPercentage < float64(c.CompleteThreshold)
+
+	slog.Debug("incomplete scrobble detection calculations", "previousScrobbleTimestamp", previousScrobble.timestamp, "currentTrackDuration", currentScrobble.trackDuration, "currentScrobbleTimestamp", currentScrobble.timestamp, "currentScrobbleDuration", currentScrobbleDuration, "completeThreshold", c.CompleteThreshold, "completeDurationThreshold", completeDurationThreshold, "currentScrobbleCompletionPercentage", currentScrobbleCompletionPercentage, "isIncomplete", isIncomplete)
+	if isIncomplete {
+		slog.Info("⏳ Incomplete scrobble detected!", "artist", currentScrobble.artist, "track", currentScrobble.track, "previousScrobbleTimestamp", previousScrobble.timestamp, "currentScrobbleTimestamp", currentScrobble.timestamp)
+		return true, nil
+	}
+	return false, nil
+}
+
+func deleteScrobble(c *Config, timestamp string, canDelete bool, deleteCurrentScrobble bool) error {
 	timeoutCtx, cancel := context.WithTimeout(c.taskCtx, 3*time.Second)
 	defer cancel()
 
-	// Sometimes multiple scrobble have an identical timestamp
-	// We always take the last scrobble because it would be the one next to the previous scrobble
-	xpathPrefix := `(//input[@value='` + timestamp + `'])[last()]`
+	// Sometimes two scrobbles have an identical timestamp
+	// Depending on if we want to delete the previous or the current scrobble, we modify the xpath expression
+	xpathPrefix := `(//input[@value='` + timestamp + `'])`
+	if deleteCurrentScrobble {
+		xpathPrefix += `[last()]`
+	}
 
 	slog.Debug("Attempting to delete scrobble", "timestamp", timestamp, "xpath", xpathPrefix)
 	err := chromedp.Run(timeoutCtx,
@@ -555,7 +587,7 @@ func deleteScrobble(c *Config, timestamp string, delete bool) error {
 		return fmt.Errorf("failed to hover or find delete button: %w", err)
 	}
 
-	if !delete {
+	if !canDelete {
 		slog.Info("Scrobble deletion skipped")
 		return nil
 	}
@@ -569,18 +601,45 @@ func deleteScrobble(c *Config, timestamp string, delete bool) error {
 	return nil
 }
 
-func logStats(c *Config) {
+func deleteScrobbleWithRetries(ctx context.Context, c *Config, timestamp string, deleteCurrentScrobble bool, retryCount uint) error {
+	_, err := backoff.Retry(ctx, func() (struct{}, error) {
+		return struct{}{}, deleteScrobble(c, timestamp, c.CanDelete, deleteCurrentScrobble)
+	}, backoff.WithMaxTries(retryCount))
+	if err != nil {
+		c.runStats.scrobbleDeleteFails++
+		return err
+	}
+	return nil
+}
+
+func logStats(ctx context.Context, c *Config) error {
 	c.runStats.elapsedTime = time.Since(c.startTime)
 
-	slog.Info("Run statistics:")
-	slog.Info(fmt.Sprintf("MusicBrainz API cache hits: %d", c.runStats.cacheHits))
-	slog.Info(fmt.Sprintf("MusicBrainz API cache misses: %d", c.runStats.cacheMisses))
-	slog.Info(fmt.Sprintf("Scrobbles processed: %d", c.runStats.processedScrobbles))
-	slog.Info(fmt.Sprintf("Scrobbles deleted (if delete enabled): %d", len(c.deletedScrobbles)))
-	slog.Info(fmt.Sprintf("Unknown duration track count: %d", c.runStats.unknownTrackDurationsCount))
-	slog.Info(fmt.Sprintf("Scrobbles skipped due to unknown track duration: %d", c.runStats.skippedScrobbleUnknownDuration))
-	slog.Info(fmt.Sprintf("Scrobbles not deleted due to error: %d", c.runStats.scrobbleDeleteFails))
-	slog.Info(fmt.Sprintf("Elapsed time: %s", c.runStats.elapsedTime.Truncate(time.Millisecond/10)))
+	telegramMessage := fmt.Sprintf("Run of %s\n", c.startTime.Format(time.RFC1123))
+
+	messages := []string{
+		"Run statistics:",
+		fmt.Sprintf("MusicBrainz API cache hits: %d", c.runStats.cacheHits),
+		fmt.Sprintf("MusicBrainz API cache misses: %d", c.runStats.cacheMisses),
+		fmt.Sprintf("Scrobbles processed: %d", c.runStats.processedScrobbles),
+		fmt.Sprintf("Scrobbles deleted (if delete enabled): %d", len(c.deletedScrobbles)),
+		fmt.Sprintf("Unknown duration track count: %d", c.runStats.unknownTrackDurationsCount),
+		fmt.Sprintf("Scrobbles skipped due to unknown track duration: %d", c.runStats.skippedScrobbleUnknownDuration),
+		fmt.Sprintf("Scrobbles not deleted due to error: %d", c.runStats.scrobbleDeleteFails),
+		fmt.Sprintf("Elapsed time: %s", c.runStats.elapsedTime.Truncate(time.Millisecond/10)),
+	}
+
+	for _, m := range messages {
+		slog.Info(m)
+		telegramMessage = strings.Join([]string{telegramMessage, m}, "\n")
+	}
+
+	if c.telegramBot != nil {
+		if err := sendTelegramMessage(ctx, c, telegramMessage); err != nil {
+			return fmt.Errorf("failed to send telegram message: %w", err)
+		}
+	}
+	return nil
 }
 
 func writeUnknownTrackDurations(unknownTrackDurations durationByTrackByArtist, dataDir string) error {
@@ -626,7 +685,7 @@ func exportScrobblesToCSV(c *Config, baseFilename string) {
 	timestamp := c.startTime.Format("20060102-150405")
 	filename := fmt.Sprintf("%s-%s.csv", baseFilename, timestamp)
 
-	slices.SortFunc(c.deletedScrobbles, func(s1, s2 scrobble) int {
+	slices.SortFunc(c.deletedScrobbles, func(s1, s2 *scrobble) int {
 		return s1.timestamp.Compare(s2.timestamp)
 	})
 
@@ -654,14 +713,14 @@ func exportScrobblesToCSV(c *Config, baseFilename string) {
 		_ = writer.Write(record)
 	}
 
-	if c.Delete {
+	if c.CanDelete {
 		slog.Info("Deleted scrobbles saved to file", "file", file.Name())
 	} else {
 		slog.Info("Would-be deleted scrobbles saved to file", "file", file.Name())
 	}
 }
 
-func logScrobblesCSV(scrobbles []scrobble) {
+func logScrobblesCSV(scrobbles []*scrobble) {
 	var sb strings.Builder
 
 	// header
@@ -679,9 +738,11 @@ func logScrobblesCSV(scrobbles []scrobble) {
 	fmt.Printf("Scrobbles CSV:\n%s", sb.String())
 }
 
-func finishRun(c *Config) error {
+func finishRun(ctx context.Context, c *Config) error {
 	defer c.close()
-	logStats(c)
+	if err := logStats(ctx, c); err != nil {
+		return fmt.Errorf("failed to log stats: %w", err)
+	}
 
 	if len(c.unknownTrackDurations) > 0 {
 		err := writeUnknownTrackDurations(c.unknownTrackDurations, c.DataDir)
@@ -694,5 +755,18 @@ func finishRun(c *Config) error {
 		exportScrobblesToCSV(c, "deleted-scrobbles")
 	}
 
+	return nil
+}
+
+func sendTelegramMessage(ctx context.Context, c *Config, message string) error {
+	params := &bot.SendMessageParams{
+		ParseMode: models.ParseModeMarkdown,
+		ChatID:    c.TelegramChatID,
+		Text:      bot.EscapeMarkdown(message),
+	}
+	_, err := c.telegramBot.SendMessage(ctx, params)
+	if err != nil {
+		return err
+	}
 	return nil
 }
