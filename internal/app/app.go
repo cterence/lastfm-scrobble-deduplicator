@@ -450,7 +450,7 @@ func addToUnknownTrackDurations(c *Config, artist, track string) error {
 	} else {
 		return ErrUnknownTrackAlreadyInMap
 	}
-	return fmt.Errorf("no duration found in cache or MusicBrainz API for track %s - %s, saved to unknown track durations", artist, track)
+	return fmt.Errorf("track %s - %s, saved to unknown track durations", artist, track)
 }
 
 func getTrackDurationFromMusicBrainz(c *Config, artist, track string) (time.Duration, error) {
@@ -502,7 +502,7 @@ func getTrackDurationFromLastFM(c *Config, url string) (time.Duration, error) {
 	if err != nil {
 		return duration, err
 	}
-	slog.Info("Parsed duration from last.fm", "trackDurationText", trackDurationText, "calculatedDuration", duration)
+	slog.Debug("Parsed duration from last.fm", "trackDurationText", trackDurationText, "calculatedDuration", duration)
 
 	return duration, nil
 }
@@ -596,7 +596,7 @@ func detectDuplicateScrobble(c *Config, previousScrobble *scrobble, currentScrob
 
 		slog.Debug("duplicate scrobble detection calculations", "previousScrobbleTimestamp", previousScrobble.timestamp, "currentScrobbleTimestamp", currentScrobble.timestamp, "currentScrobbleDuration", currentScrobbleDuration, "duplicateThreshold", c.DuplicateThreshold, "duplicateDurationThreshold", duplicateDurationThreshold, "currentScrobbleCompletionPercentage", currentScrobbleCompletionPercentage, "isDuplicate", isDuplicate)
 		if isDuplicate {
-			slog.Info("🎯 Duplicate scrobble detected!", "artist", currentScrobble.artist, "track", currentScrobble.track, "previousScrobbleTimestamp", previousScrobble.timestamp, "currentScrobbleTimestamp", currentScrobble.timestamp)
+			slog.Info("🎯 Duplicate scrobble detected!", "artist", currentScrobble.artist, "track", currentScrobble.track, "duration", currentScrobble.trackDuration, "timeBetweenScrobbles", duplicateDurationThreshold, "scrobbleToDeleteTimestamp", previousScrobble.timestamp.Format(time.RFC822))
 			return true, nil
 		}
 	}
@@ -689,6 +689,7 @@ func logStats(ctx context.Context, c *Config) error {
 		if err := sendTelegramMessage(ctx, c, telegramMessage); err != nil {
 			return fmt.Errorf("failed to send telegram message: %w", err)
 		}
+		slog.Info("Sent telegram message")
 	}
 	return nil
 }
