@@ -617,7 +617,7 @@ func detectIncompleteScrobble(c *Config, previousScrobble *scrobble, currentScro
 	return false, nil
 }
 
-func deleteScrobble(c *Config, timestamp string, canDelete bool, deleteCurrentScrobble bool) error {
+func deleteScrobble(c *Config, timestamp string, deleteCurrentScrobble bool) error {
 	timeoutCtx, cancel := context.WithTimeout(c.taskCtx, 3*time.Second)
 	defer cancel()
 
@@ -647,7 +647,7 @@ func deleteScrobble(c *Config, timestamp string, canDelete bool, deleteCurrentSc
 
 func deleteScrobbleWithRetries(ctx context.Context, c *Config, timestamp string, deleteCurrentScrobble bool, retryCount uint) error {
 	_, err := backoff.Retry(ctx, func() (struct{}, error) {
-		return struct{}{}, deleteScrobble(c, timestamp, c.CanDelete, deleteCurrentScrobble)
+		return struct{}{}, deleteScrobble(c, timestamp, deleteCurrentScrobble)
 	}, backoff.WithMaxTries(retryCount))
 	if err != nil {
 		c.runStats.scrobbleDeleteFails++
@@ -661,12 +661,19 @@ func logStats(ctx context.Context, c *Config) error {
 
 	telegramMessage := fmt.Sprintf("Run of %s\n", c.startTime.Format(time.RFC1123))
 
+	var deletedScrobblesStat string
+	if c.CanDelete {
+		deletedScrobblesStat = fmt.Sprintf("Duplicated scrobbles deleted: %d", len(c.deletedScrobbles))
+	} else {
+		deletedScrobblesStat = fmt.Sprintf("Duplicated scrobbles not deleted: %d", len(c.deletedScrobbles))
+	}
+
 	messages := []string{
 		"Run statistics:",
+		deletedScrobblesStat,
 		fmt.Sprintf("MusicBrainz API cache hits: %d", c.runStats.cacheHits),
 		fmt.Sprintf("MusicBrainz API cache misses: %d", c.runStats.cacheMisses),
 		fmt.Sprintf("Scrobbles processed: %d", c.runStats.processedScrobbles),
-		fmt.Sprintf("Scrobbles deleted (if delete enabled): %d", len(c.deletedScrobbles)),
 		fmt.Sprintf("Unknown duration track count: %d", c.runStats.unknownTrackDurationsCount),
 		fmt.Sprintf("Scrobbles skipped due to unknown track duration: %d", c.runStats.skippedScrobbleUnknownDuration),
 		fmt.Sprintf("Scrobbles not deleted due to error: %d", c.runStats.scrobbleDeleteFails),
