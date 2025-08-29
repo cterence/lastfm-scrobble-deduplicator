@@ -1,9 +1,12 @@
 name: Create and publish Docker image
 
 on:
-  push:
-    branches: [main]
-    tags: ["*"]
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+  packages: write
 
 env:
   REGISTRY: ghcr.io
@@ -35,6 +38,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=semver
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

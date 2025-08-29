@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]+\\.[0-9]+\\.[0-9]+"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.actor }}/scrobble-deduplicator
+
+jobs:
+  release:
+    name: Release Go Binary
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Build and publish in parallel: linux/386, linux/amd64, linux/arm64, windows/386, windows/amd64, darwin/amd64, darwin/arm64
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          - goarch: arm64
+            goos: windows
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=${VERSION#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
+      - name: Build and Release Go Binary
+        uses: wangyoucao577/go-release-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          goos: ${{ matrix.goos }}
+          goarch: ${{ matrix.goarch }}
+          goversion: "1.24"
+          binary_name: "scrobble-deduplicator"
+          ldflags: "-X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ github.sha }} -X main.date=${{ steps.version.outputs.date }}"
+          extra_files: "README.md LICENSE config.example.yaml"
+          sha256sum: true
+          compress_assets: "auto"
+          asset_name: "scrobble-deduplicator-${{ matrix.goos }}-${{ matrix.goarch }}"

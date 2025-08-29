@@ -14,6 +14,12 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 func setLogger(logLevel string) error {
 	var slogLogLevel slog.Level
 
@@ -66,8 +72,9 @@ func main() {
 	}
 
 	cmd := &cli.Command{
-		Name:  "scrobble-deduplicator",
-		Usage: "Deduplicate Last.fm scrobbles",
+		Name:    "scrobble-deduplicator",
+		Usage:   "Deduplicate Last.fm scrobbles",
+		Version: fmt.Sprintf("Version: %s\nCommit: %s\nBuild Date: %s", version, commit, date),
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:        "config",
