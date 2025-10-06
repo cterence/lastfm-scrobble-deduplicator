@@ -10,7 +10,7 @@ require (
 	github.com/go-telegram/bot v1.17.0
 	github.com/goccy/go-yaml v1.18.0
 	github.com/michiwend/gomusicbrainz v0.0.0-20181012083520-6c07e13dd396
-	github.com/redis/go-redis/v9 v9.12.1
+	github.com/redis/go-redis/v9 v9.14.0
 	github.com/urfave/cli-altsrc/v3 v3.0.1
 	github.com/urfave/cli/v3 v3.4.1
 )
