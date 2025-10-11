@@ -2,7 +2,7 @@ name: scrobble-deduplicator
 services:
   app:
     container_name: app
-    image: ghcr.io/cterence/scrobble-deduplicator:latest
+    image: ghcr.io/cterence/scrobble-deduplicator:latest@sha256:50054b26fafaa2bae65fd767c3168bc13aad0cc5a5b09b4a86f178d224aced37
     environment:
       REDIS_URL: redis://redis:6379/0
       BROWSER_URL: ws://chromium:3000?token=local
@@ -17,7 +17,7 @@ services:
 
   redis:
     container_name: redis
-    image: redis:latest
+    image: redis:latest@sha256:f0957bcaa75fd58a9a1847c1f07caf370579196259d69ac07f2e27b5b389b021
     ports:
       - "6379:6379"
     volumes:
@@ -30,7 +30,7 @@ services:
 
   chromium:
     container_name: chromium
-    image: ghcr.io/browserless/chromium:latest
+    image: ghcr.io/browserless/chromium:latest@sha256:e0d0a570f68afb0d0f7a442a1938cc356832c43a484445d9eec15dceba0b5427
     environment:
       TOKEN: local
       DEBUG: -*
