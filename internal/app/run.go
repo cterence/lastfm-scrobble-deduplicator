@@ -33,7 +33,8 @@ func Run(ctx context.Context, c *Config) error {
 	startPage, err := getStartPage(c)
 	if err != nil {
 		if errors.Is(err, ErrNoScrobbles) {
-			return err
+			slog.Info(ErrNoScrobbles.Error())
+			return nil
 		}
 		return fmt.Errorf("failed to get starting page: %w", err)
 	}
