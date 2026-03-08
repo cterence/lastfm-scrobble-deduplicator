@@ -3,7 +3,7 @@ module github.com/cterence/scrobble-deduplicator
 go 1.24.5
 
 require (
-	github.com/antchfx/htmlquery v1.3.4
+	github.com/antchfx/htmlquery v1.3.6
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/chromedp/cdproto v0.0.0-20250803210736-d308e07a266d
 	github.com/chromedp/chromedp v0.14.1
@@ -16,7 +16,7 @@ require (
 )
 
 require (
-	github.com/antchfx/xpath v1.3.5 // indirect
+	github.com/antchfx/xpath v1.3.6 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
