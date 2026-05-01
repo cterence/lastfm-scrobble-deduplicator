@@ -18,7 +18,7 @@ services:
 
   redis:
     container_name: redis-dev
-    image: redis:latest
+    image: redis:latest@sha256:832d7785830f3f4b559300e6191fc914b15642c1935252338825cf4332200148
     ports:
       - "6379:6379"
     healthcheck:
@@ -31,7 +31,7 @@ services:
 
   chromium:
     container_name: chromium-dev
-    image: ghcr.io/browserless/chromium:latest
+    image: ghcr.io/browserless/chromium:latest@sha256:5fc8077ceb90499f920f0896a2f50a1cb95305fa128b7099821e11f0a35fac2c
     ports:
       - 3000:3000
     environment:
