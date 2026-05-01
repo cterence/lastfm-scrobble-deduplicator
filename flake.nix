@@ -17,7 +17,7 @@
       pre-commit-hooks,
     }:
     let
-      goVersion = 24; # Change this to update the whole stack
+      goVersion = 26; # Change this to update the whole stack
 
       supportedSystems = [
         "x86_64-linux"
@@ -46,7 +46,7 @@
         { pkgs }:
         {
           default = pkgs.mkShell {
-            inherit (self.checks.${pkgs.system}.pre-commit-check) shellHook;
+            inherit (self.checks.${pkgs.stdenv.hostPlatform.system}.pre-commit-check) shellHook;
             packages = with pkgs; [
               air
               go
@@ -61,7 +61,7 @@
       checks = forEachSupportedSystem (
         { pkgs }:
         {
-          pre-commit-check = pre-commit-hooks.lib.${pkgs.system}.run {
+          pre-commit-check = pre-commit-hooks.lib.${pkgs.stdenv.hostPlatform.system}.run {
             src = ./.;
             hooks = {
               gofmt.enable = true;
