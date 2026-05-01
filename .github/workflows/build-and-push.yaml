@@ -2,7 +2,7 @@ name: Create and publish Docker image
 
 on:
   release:
-    types: [created]
+    types: [ created ]
 
 permissions:
   contents: write
@@ -10,7 +10,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.actor }}/scrobble-deduplicator
+  IMAGE_NAME: ${{ github.actor }}/lastfm-scrobble-deduplicator
 
 jobs:
   build-and-push-image:

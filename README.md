@@ -29,7 +29,7 @@ Instead of manually fixing these issues or dealing with problematic scrobblers, 
 ### Prerequisites
 
 - **Binary releases**: Chrome or Chromium browser (required for chromedp)
-- **Source builds**: Go 1.24+, Chrome or Chromium browser
+- **Source builds**: Go 1.26+, Chrome or Chromium browser
 - Docker setup (alternative to local browser)
 - Last.fm account credentials
 
