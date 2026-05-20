@@ -17,7 +17,7 @@ services:
 
   redis:
     container_name: redis
-    image: redis:latest@sha256:832d7785830f3f4b559300e6191fc914b15642c1935252338825cf4332200148
+    image: redis:latest@sha256:d4a4a4db02748731e6313d60adfd92985b6ad7bc2f2400a6cb0f8b35a2a6b492
     ports:
       - "6379:6379"
     volumes:
