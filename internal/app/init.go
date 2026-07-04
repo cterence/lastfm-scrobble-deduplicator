@@ -96,16 +96,8 @@ func initApp(ctx context.Context, c *Config) error {
 	)
 
 	slog.Info("Starting browser")
-	browserInitTrialCount := 0
 	// ensure that the browser process is started
-	_, err = backoff.Retry(ctx, func() (struct{}, error) {
-		err := chromedp.Run(taskCtx)
-		if err != nil {
-			browserInitTrialCount++
-			slog.Debug("failed to start browser", "error", err, "trial-count", browserInitTrialCount)
-		}
-		return struct{}{}, err
-	}, backoff.WithBackOff(backoff.NewConstantBackOff(3*time.Second)), backoff.WithMaxTries(10))
+	err = chromedp.Run(taskCtx)
 	if err != nil {
 		return fmt.Errorf("failed to start browser: %w", err)
 	}

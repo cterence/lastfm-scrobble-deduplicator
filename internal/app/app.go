@@ -779,12 +779,11 @@ func logScrobblesCSV(scrobbles []*scrobble) {
 	sb.WriteString("Artist,Track,Timestamp,TimestampString\n")
 
 	for _, s := range scrobbles {
-		sb.WriteString(fmt.Sprintf("%s,%s,%s,%s\n",
+		fmt.Fprintf(&sb, "%s,%s,%s,%s\n",
 			s.artist,
 			s.track,
 			s.timestamp.Format(time.RFC3339),
-			s.timestampString,
-		))
+			s.timestampString)
 	}
 
 	fmt.Printf("Scrobbles CSV:\n%s", sb.String())
