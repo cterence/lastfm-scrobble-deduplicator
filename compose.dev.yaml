@@ -18,7 +18,7 @@ services:
 
   redis:
     container_name: redis-dev
-    image: redis:latest@sha256:832d7785830f3f4b559300e6191fc914b15642c1935252338825cf4332200148
+    image: redis:latest@sha256:298e5b3bc566bade82f46ad5511777a4a07a294097ce16ada2f6a42be5239df5
     ports:
       - "6379:6379"
     healthcheck:
