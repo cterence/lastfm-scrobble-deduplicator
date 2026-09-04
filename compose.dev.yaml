@@ -31,7 +31,7 @@ services:
 
   chromium:
     container_name: chromium-dev
-    image: ghcr.io/browserless/chromium:latest@sha256:5fc8077ceb90499f920f0896a2f50a1cb95305fa128b7099821e11f0a35fac2c
+    image: ghcr.io/browserless/chromium:latest@sha256:b24f29a97ab3348ab560e266887edeca4be1ba70ae1df080a4f999bde7e995e0
     ports:
       - 3000:3000
     environment:
